@@ -1,0 +1,2 @@
+source /home/neo/esp/neo_wardrive/build/gdbinit/symbols
+source /home/neo/esp/neo_wardrive/build/gdbinit/connect

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NeoWardrive – Glitch Edition</title>
+<link rel="stylesheet" href="/glitch.css" />
+<script src="/app.js" defer></script>
+</head>
+<body>
+
+<div class="crt-overlay"></div>
+
+<header class="header">
+    <h1>
+        <span class="glitch" data-text="NEO WARDRIVE">NEO WARDRIVE</span>
+        <span class="subtitle">TACTICAL RECON SYSTEM</span>
+    </h1>
+</header>
+
+<nav class="tabs">
+    <button class="active" data-tab="dashboard">
+        <span class="icon">⚡</span> Dashboard
+    </button>
+    <button data-tab="aps">
+        <span class="icon">📡</span> Access Points
+    </button>
+    <button data-tab="export">
+        <span class="icon">💾</span> Export Data
+    </button>
+    <button data-tab="rogues">
+        <span class="icon">⚠️</span> Rogue APs
+    </button>
+    <button data-tab="vulns">
+        <span class="icon">🔓</span> Vulnerabilities
+    </button>
+    <button data-tab="deauth">
+        <span class="icon">💀</span> Deauth Detector
+    </button>
+    <button data-tab="injector">
+        <span class="icon">💉</span> Packet Injector
+    </button>
+    <button data-tab="classify">
+        <span class="icon">🏷️</span> Classification
+    </button>
+</nav>
+
+<main>
+
+<!-- ======================= DASHBOARD ======================= -->
+<section id="dashboard" class="tab active">
+    
+    <!-- Status Cards -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-label">WARDRIVE STATUS</div>
+            <div class="stat-value" id="statusText">OFFLINE</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">NETWORKS FOUND</div>
+            <div class="stat-value" id="apCount">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">SCAN SUCCESS</div>
+            <div class="stat-value" id="scanSuccess">0/0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">UPTIME</div>
+            <div class="stat-value" id="uptime">00:00:00</div>
+        </div>
+    </div>
+
+    <!-- System Monitor -->
+    <div class="card">
+        <h2>🖥️ SYSTEM MONITOR</h2>
+        <div class="stats-grid">
+            <div class="system-stat">
+                <div class="stat-label">FREE HEAP</div>
+                <div class="stat-value-small" id="freeHeap">0 KB</div>
+            </div>
+            <div class="system-stat">
+                <div class="stat-label">MIN FREE HEAP</div>
+                <div class="stat-value-small" id="minFreeHeap">0 KB</div>
+            </div>
+            <div class="system-stat">
+                <div class="stat-label">HEAP USAGE</div>
+                <div class="stat-value-small" id="heapUsage">0%</div>
+            </div>
+        </div>
+        <div class="heap-monitor">
+            <div class="heap-bar-container">
+                <div id="heapBar" class="heap-bar heap-ok" style="width: 0%"></div>
+            </div>
+            <div class="heap-legend">
+                <span class="heap-legend-item"><span class="heap-dot heap-ok"></span> Normal (0-50%)</span>
+                <span class="heap-legend-item"><span class="heap-dot heap-warn"></span> Warning (50-75%)</span>
+                <span class="heap-legend-item"><span class="heap-dot heap-critical"></span> Critical (75%+)</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Control Panel -->
+    <div class="card control-panel">
+        <h2>⚡ CONTROL PANEL</h2>
+        <div class="button-grid">
+            <button id="btnStart" class="btn btn-primary">
+                <span class="btn-icon">▶</span> START WARDRIVE
+            </button>
+            <button id="btnStop" class="btn btn-danger">
+                <span class="btn-icon">■</span> STOP WARDRIVE
+            </button>
+            <button id="btnScanDash" class="btn btn-secondary">
+                <span class="btn-icon">🔍</span> MANUAL SCAN
+            </button>
+            <button id="btnSaveCurrentScan" class="btn btn-secondary">
+                <span class="btn-icon">💾</span> SAVE SCAN
+            </button>
+            <button id="btnClear" class="btn btn-warning">
+                <span class="btn-icon">🗑️</span> CLEAR DATA
+            </button>
+        </div>
+    </div>
+
+    <!-- Live Network Table -->
+    <div class="card">
+        <div class="card-header">
+            <h2>📡 LIVE NETWORK FEED</h2>
+            <div class="live-indicator">
+                <span class="pulse"></span> MONITORING
+            </div>
+        </div>
+        
+        <div class="table-wrapper">
+            <table class="ap-table">
+                <thead>
+                    <tr>
+                        <th>SSID</th>
+                        <th>BSSID</th>
+                        <th>SIGNAL</th>
+                        <th>CH</th>
+                        <th>SECURITY</th>
+                        <th>SEEN</th>
+                        <th>LAST SEEN</th>
+                        <th>STATUS</th>
+                    </tr>
+                </thead>
+                <tbody id="dashApList">
+                    <tr class="no-data">
+                        <td colspan="8">Waiting for scan data...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="card">
+        <h2>📋 ACTIVITY LOG</h2>
+        <pre id="log" class="log-window"></pre>
+    </div>
+
+</section>
+
+<!-- ======================= APS ======================= -->
+<section id="aps" class="tab">
+    <div class="card">
+        <h2>📡 Nearby Access Points</h2>
+        <button id="btnScan" class="btn btn-primary">Scan Once</button>
+
+        <div class="table-wrapper">
+            <table class="ap-table">
+                <thead>
+                    <tr>
+                        <th>SSID</th>
+                        <th>BSSID</th>
+                        <th>RSSI</th>
+                        <th>Ch</th>
+                        <th>Auth</th>
+                        <th>Seen</th>
+                    </tr>
+                </thead>
+                <tbody id="apList"></tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<!-- ======================= EXPORT DATA ======================= -->
+<section id="export" class="tab">
+    
+    <!-- Current Scan Export -->
+    <div class="card">
+        <h2>💾 EXPORT CURRENT SCAN</h2>
+        <div id="currentScanInfo" style="margin-bottom: 20px;">
+            <div class="scan-info" style="color: var(--text-secondary);">Loading...</div>
+        </div>
+        
+        <div class="button-grid">
+            <button id="btnExportCurrentCSV" class="btn btn-primary">
+                <span class="btn-icon">📊</span> EXPORT CSV
+            </button>
+            <button id="btnExportCurrentJSON" class="btn btn-secondary">
+                <span class="btn-icon">📋</span> EXPORT JSON
+            </button>
+            <button id="btnExportCurrentKML" class="btn btn-secondary">
+                <span class="btn-icon">🗺️</span> EXPORT KML
+            </button>
+        </div>
+    </div>
+
+    <!-- Saved Scans -->
+    <div class="card">
+        <div class="card-header">
+            <h2>📚 SAVED SCANS</h2>
+            <button id="btnClearStorage" class="btn-mini btn-danger">CLEAR ALL</button>
+        </div>
+        
+        <div id="savedScansList" class="saved-scans-container">
+            <div class="no-data">Loading saved scans...</div>
+        </div>
+    </div>
+
+    <!-- Export Info -->
+    <div class="card">
+        <h2>ℹ️ EXPORT FORMATS</h2>
+        <div class="export-info">
+            <div class="export-format">
+                <strong>CSV:</strong> Standard spreadsheet format, compatible with Excel, Google Sheets, and most data analysis tools.
+            </div>
+            <div class="export-format">
+                <strong>JSON:</strong> Machine-readable format, ideal for programming and automation.
+            </div>
+            <div class="export-format">
+                <strong>KML:</strong> Google Earth compatible format (GPS coordinates placeholder for future GPS module integration).
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ======================= ROGUES ======================= -->
+<section id="rogues" class="tab">
+    <div class="card">
+        <h2>⚠️ Rogue AP Detection</h2>
+        <button id="btnRogue" class="btn btn-primary">Scan Rogues</button>
+        <pre id="rogueList" class="log-window"></pre>
+    </div>
+</section>
+
+<!-- ======================= VULNERABLE NETWORKS ======================= -->
+<section id="vulns" class="tab">
+    <div class="card">
+        <h2>🔓 Vulnerable Networks</h2>
+        <button id="btnVuln" class="btn btn-primary">Scan Vulnerabilities</button>
+        <pre id="vulnList" class="log-window"></pre>
+    </div>
+</section>
+
+<!-- ======================= DEAUTH ======================= -->
+<section id="deauth" class="tab">
+    <div class="card">
+        <h2>💀 Deauth / Disassoc Detector</h2>
+        <button id="btnDeauth" class="btn btn-primary">Refresh</button>
+        <pre id="deauthLog" class="log-window"></pre>
+    </div>
+</section>
+
+<!-- ======================= PACKET INJECTOR ======================= -->
+<section id="injector" class="tab">
+    <div class="card">
+        <h2>💉 Packet Injector</h2>
+        
+        <div class="alert alert-warning">
+            <strong>⚠️ WARNING:</strong> Packet injection is for authorized testing only. Ensure you have permission before use.
+        </div>
+
+        <div class="form-group">
+            <label>BSSID Target:</label>
+            <input id="inj_bssid" placeholder="AA:BB:CC:DD:EE:FF" />
+            <small>Use format: XX:XX:XX:XX:XX:XX (hexadecimal)</small>
+        </div>
+
+        <div class="form-group">
+            <label>Packet Type:</label>
+            <select id="inj_type">
+                <option value="deauth">Deauth (Deauthentication)</option>
+                <option value="disassoc">Disassoc (Disassociation)</option>
+                <option value="probe">Probe Request</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>Packet Count (1-100):</label>
+            <input id="inj_count" type="number" value="10" min="1" max="100" />
+        </div>
+
+        <div class="form-group">
+            <label>Interval (ms, 10-5000):</label>
+            <input id="inj_interval" type="number" value="100" min="10" max="5000" />
+            <small>Lower intervals = faster transmission but higher system load</small>
+        </div>
+
+        <button id="btnInject" class="btn btn-danger">FIRE PACKETS</button>
+
+        <pre id="injectLog" class="log-window"></pre>
+    </div>
+</section>
+
+<!-- ======================= CLASSIFICATIONS ======================= -->
+<section id="classify" class="tab">
+    <div class="card">
+        <h2>🏷️ AP Classification</h2>
+        <button id="btnClass" class="btn btn-primary">Refresh</button>
+        <pre id="classList" class="log-window"></pre>
+    </div>
+</section>
+
+</main>
+
+</body>
+</html>
