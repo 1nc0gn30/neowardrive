@@ -102,52 +102,56 @@ const GeoTracker = {
         }
     },
 
-    getPosition: function(options = {}) {
-        const { silent = false } = options;
-        if (!this.isSupported) return Promise.resolve(null);
+    getPosition: async function(options = {}) {
+    const { silent = false } = options;
+    if (!this.isSupported) return null;
 
-        // If we're running in an insecure context, the browser will reject geolocation.
-        // Try a network/IP-based lookup so the table still gets a location.
-        if (!this.isSecure && !this.networkFallbackAttempted) {
-            this.networkFallbackAttempted = true;
-            const netLoc = await this.fetchNetworkLocation();
-            if (netLoc) return netLoc;
-        }
+    // Insecure origin fallback
+    if (!this.isSecure && !this.networkFallbackAttempted) {
+        this.networkFallbackAttempted = true;
+        const netLoc = await this.fetchNetworkLocation();
+        if (netLoc) return netLoc;
+    }
 
-        return new Promise(resolve => {
-            navigator.geolocation.getCurrentPosition(
-                pos => {
-                    this.permissionState = 'granted';
-                    this.lastLocation = {
-                        lat: pos.coords.latitude,
-                        lon: pos.coords.longitude,
-                        accuracy: pos.coords.accuracy,
-                        timestamp: pos.timestamp || Date.now()
-                    };
-                    if (!silent) {
-                        log(activityLog, `🛰️ GPS fix: ${formatCoords(this.lastLocation)} (±${Math.round(this.lastLocation.accuracy)}m)`);
-                    }
-                    resolve(this.lastLocation);
-                },
-                err => {
-                    console.warn('Geolocation error', err);
-                    if (!silent) {
-                        log(activityLog, `✗ GPS error: ${err.message || err}`);
-                    }
-                    if (err.code === 1) {
-                        this.permissionState = 'denied';
-                    } else if (!this.isSecure && !this.networkFallbackAttempted) {
-                        // Retry with fallback if the browser rejected the insecure origin
-                        this.networkFallbackAttempted = true;
-                        this.fetchNetworkLocation().then(fallback => resolve(fallback || this.lastLocation));
-                        return;
-                    }
-                    resolve(this.lastLocation);
-                },
-                { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
-            );
-        });
-    },
+    return new Promise(resolve => {
+        navigator.geolocation.getCurrentPosition(
+            pos => {
+                this.permissionState = 'granted';
+                this.lastLocation = {
+                    lat: pos.coords.latitude,
+                    lon: pos.coords.longitude,
+                    accuracy: pos.coords.accuracy,
+                    timestamp: pos.timestamp || Date.now()
+                };
+                if (!silent) {
+                    log(activityLog,
+                        `🛰️ GPS fix: ${formatCoords(this.lastLocation)} (±${Math.round(this.lastLocation.accuracy)}m)`
+                    );
+                }
+                resolve(this.lastLocation);
+            },
+            err => {
+                console.warn('Geolocation error', err);
+                if (!silent) {
+                    log(activityLog, `✗ GPS error: ${err.message || err}`);
+                }
+                if (err.code === 1) {
+                    this.permissionState = 'denied';
+                } else if (!this.isSecure && !this.networkFallbackAttempted) {
+                    // Retry fallback
+                    this.networkFallbackAttempted = true;
+                    this.fetchNetworkLocation().then(fallback =>
+                        resolve(fallback || this.lastLocation)
+                    );
+                    return;
+                }
+                resolve(this.lastLocation);
+            },
+            { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
+        );
+    });
+},
+
 
     requestPermission: async function() {
         if (!this.isSupported) {
