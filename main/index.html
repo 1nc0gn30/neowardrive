@@ -68,6 +68,10 @@
             <div class="stat-label">UPTIME</div>
             <div class="stat-value" id="uptime">00:00:00</div>
         </div>
+        <div class="stat-card">
+            <div class="stat-label">GPS</div>
+            <div class="stat-value" id="gpsStatus">Waiting...</div>
+        </div>
     </div>
 
     <!-- System Monitor -->
@@ -141,12 +145,13 @@
                         <th>SECURITY</th>
                         <th>SEEN</th>
                         <th>LAST SEEN</th>
+                        <th>GPS</th>
                         <th>STATUS</th>
                     </tr>
                 </thead>
                 <tbody id="dashApList">
                     <tr class="no-data">
-                        <td colspan="8">Waiting for scan data...</td>
+                        <td colspan="9">Waiting for scan data...</td>
                     </tr>
                 </tbody>
             </table>
@@ -177,6 +182,7 @@
                         <th>Ch</th>
                         <th>Auth</th>
                         <th>Seen</th>
+                        <th>GPS</th>
                     </tr>
                 </thead>
                 <tbody id="apList"></tbody>
@@ -231,7 +237,7 @@
                 <strong>JSON:</strong> Machine-readable format, ideal for programming and automation.
             </div>
             <div class="export-format">
-                <strong>KML:</strong> Google Earth compatible format (GPS coordinates placeholder for future GPS module integration).
+                <strong>KML:</strong> Google Earth compatible format that includes captured GPS coordinates when available.
             </div>
         </div>
     </div>
