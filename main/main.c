@@ -1465,6 +1465,8 @@ static void wifi_init(void) {
     strlcpy((char *)ap_cfg.ap.password, AP_PASS, sizeof(ap_cfg.ap.password));
     ap_cfg.ap.max_connection = 4;
     ap_cfg.ap.authmode       = pass_len ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
+    ap_cfg.ap.ssid_hidden    = 0;
+    ap_cfg.ap.beacon_interval = 100;
     ap_cfg.ap.pmf_cfg.required = false;
 
     // ALWAYS use APSTA mode for wardrive scanning to work
@@ -1481,7 +1483,8 @@ static void wifi_init(void) {
     esp_netif_ip_info_t ip_info = {
         .ip      = { .addr = esp_ip4addr_aton("192.168.4.1") },
         .netmask = { .addr = esp_ip4addr_aton("255.255.255.0") },
-        .gw      = { .addr = esp_ip4addr_aton("192.168.4.1") },
+        // Advertise no default route so clients keep their own internet connection
+        .gw      = { .addr = 0 },
     };
 
     ESP_ERROR_CHECK(esp_netif_dhcps_stop(g_ap_netif));
@@ -1497,6 +1500,9 @@ static void wifi_init(void) {
     ));
 
     ESP_ERROR_CHECK(esp_netif_dhcps_start(g_ap_netif));
+
+    // Keep the AP beacons consistent while we're busy scanning/injecting
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     update_promiscuous_filter();
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
