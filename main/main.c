@@ -1090,6 +1090,32 @@ static esp_err_t handler_api_packets_send(httpd_req_t *req) {
 
     uint8_t broadcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
+    // Try to move to the AP's channel for frame types that require being on-channel
+    uint8_t original_primary;
+    wifi_second_chan_t original_second;
+    esp_wifi_get_channel(&original_primary, &original_second);
+
+    uint8_t target_channel = 0;
+    if (xSemaphoreTake(g_ap_mutex, pdMS_TO_TICKS(250)) == pdTRUE) {
+        for (int i = 0; i < g_ap_count; i++) {
+            ap_info_t *ap = &g_aps[i];
+            if (ap->in_use && mac_equal(ap->bssid, target_mac)) {
+                target_channel = ap->channel;
+                break;
+            }
+        }
+        xSemaphoreGive(g_ap_mutex);
+    }
+
+    if (target_channel > 0 && target_channel <= 14 && strcmp(packet_type, "probe") != 0) {
+        esp_err_t ch_err = esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
+        if (ch_err == ESP_OK) {
+            ESP_LOGI(TAG, "Switched to channel %u for injection", (unsigned)target_channel);
+        } else {
+            ESP_LOGW(TAG, "Failed to switch channel to %u: %s", (unsigned)target_channel, esp_err_to_name(ch_err));
+        }
+    }
+
     wifi_mode_t old_mode;
     esp_wifi_get_mode(&old_mode);
     bool changed_mode = false;
@@ -1137,6 +1163,11 @@ static esp_err_t handler_api_packets_send(httpd_req_t *req) {
 
     if (changed_mode) {
         esp_wifi_set_mode(old_mode);
+    }
+
+    if (target_channel > 0 && target_channel != original_primary) {
+        esp_wifi_set_channel(original_primary, original_second);
+        ESP_LOGI(TAG, "Restored channel to %u", (unsigned)original_primary);
     }
 
     char response[192];
