@@ -125,6 +125,27 @@
         </div>
     </div>
 
+    <!-- GPS Controls -->
+    <div class="card">
+        <h2>🛰️ GPS Control</h2>
+        <p class="helper-text">Grant location access on your phone or laptop to attach coordinates to each scan. Use the buttons to start continuous GPS updates or grab a one-time fix.</p>
+        <div class="button-grid">
+            <button id="btnGpsEnable" class="btn btn-secondary">
+                <span class="btn-icon">📍</span> ENABLE LIVE GPS
+            </button>
+            <button id="btnGpsOnce" class="btn btn-primary">
+                <span class="btn-icon">🎯</span> REQUEST FIX
+            </button>
+            <button id="btnGpsDisable" class="btn btn-warning">
+                <span class="btn-icon">✕</span> STOP GPS
+            </button>
+        </div>
+        <div class="gps-meta">
+            <div><span class="meta-label">Permission:</span> <span id="gpsPermission" class="meta-value">Prompt</span></div>
+            <div><span class="meta-label">Last Fix:</span> <span id="gpsLastFix" class="meta-value">—</span></div>
+        </div>
+    </div>
+
     <!-- Live Network Table -->
     <div class="card">
         <div class="card-header">
@@ -279,6 +300,23 @@
             <strong>⚠️ WARNING:</strong> Packet injection is for authorized testing only. Ensure you have permission before use.
         </div>
 
+        <p class="helper-text">Tip: click any BSSID in the dashboard or AP table to auto-fill the target below. Use longer intervals for reliability on weak signals.</p>
+
+        <div class="info-grid">
+            <div class="info-block">
+                <div class="stat-label">Packets Fired</div>
+                <div class="stat-value-small" id="packetCount">0</div>
+            </div>
+            <div class="info-block">
+                <div class="stat-label">Handshake Status</div>
+                <div class="stat-value-small" id="handshakeStatus">IDLE</div>
+            </div>
+            <div class="info-block">
+                <div class="stat-label">Handshakes Seen</div>
+                <div class="stat-value-small" id="handshakeCount">0</div>
+            </div>
+        </div>
+
         <div class="form-group">
             <label>BSSID Target:</label>
             <input id="inj_bssid" placeholder="AA:BB:CC:DD:EE:FF" />
@@ -308,6 +346,16 @@
         <button id="btnInject" class="btn btn-danger">FIRE PACKETS</button>
 
         <pre id="injectLog" class="log-window"></pre>
+    </div>
+
+    <div class="card">
+        <h2>🤝 Handshake Listener</h2>
+        <p class="helper-text">Enable listening while you run deauth/disassoc tests to capture EAPOL handshakes. The counter increments whenever a handshake frame is seen in promiscuous mode.</p>
+        <div class="button-grid">
+            <button id="btnHandshakeStart" class="btn btn-primary"><span class="btn-icon">🎧</span> START LISTENING</button>
+            <button id="btnHandshakeStop" class="btn btn-warning"><span class="btn-icon">✋</span> STOP LISTENING</button>
+        </div>
+        <pre class="helper-block">Runs in monitor mode; keep the device on-channel with your target for best results.</pre>
     </div>
 </section>
 

@@ -25,6 +25,7 @@
 
 static esp_err_t handler_api_handshake_start(httpd_req_t *req);
 static esp_err_t handler_api_handshake_stop(httpd_req_t *req);
+static esp_err_t handler_api_handshake_status(httpd_req_t *req);
 static esp_err_t handler_api_wardrive_on(httpd_req_t *req);
 static esp_err_t handler_api_wardrive_off(httpd_req_t *req);
 
@@ -140,6 +141,14 @@ static deauth_event_t   g_deauth_log[32];
 static int              g_deauth_head = 0;
 static security_stats_t g_security_stats = {0};
 static packet_stats_t   g_packet_stats   = {0};
+
+static void update_promiscuous_filter(void) {
+    wifi_promiscuous_filter_t filt = {
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
+                       (g_packet_stats.handshake_listening ? WIFI_PROMIS_FILTER_MASK_DATA : 0)
+    };
+    esp_wifi_set_promiscuous_filter(&filt);
+}
 
 // ========================= UTILS ===========================
 
@@ -736,7 +745,8 @@ static esp_err_t handler_api_state(httpd_req_t *req) {
     snprintf(buf, sizeof(buf),
              "{\"wardrive\":%s,\"ap_count\":%d,\"total_scans\":%lu,"
              "\"successful_scans\":%lu,\"failed_scans\":%lu,"
-             "\"uptime_sec\":%lu,\"free_heap\":%lu,\"min_free_heap\":%lu}",
+             "\"uptime_sec\":%lu,\"free_heap\":%lu,\"min_free_heap\":%lu,"
+             "\"packets_sent\":%lu,\"handshake_listening\":%s,\"handshake_captured\":%lu}",
              g_wardrive_on ? "true" : "false",
              g_ap_count,
              (unsigned long)g_stats.total_scans,
@@ -744,7 +754,10 @@ static esp_err_t handler_api_state(httpd_req_t *req) {
              (unsigned long)g_stats.failed_scans,
              (unsigned long)g_stats.uptime_sec,
              (unsigned long)g_stats.free_heap,
-             (unsigned long)g_stats.min_free_heap);
+             (unsigned long)g_stats.min_free_heap,
+             (unsigned long)g_packet_stats.packets_sent,
+             g_packet_stats.handshake_listening ? "true" : "false",
+             (unsigned long)g_packet_stats.handshake_captured);
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
@@ -1055,6 +1068,8 @@ static esp_err_t handler_api_packets_send(httpd_req_t *req) {
     uint8_t frame[128];
     size_t frame_len = 26;
     int sent = 0;
+    int failed = 0;
+    esp_err_t last_err = ESP_OK;
 
     for (int i = 0; i < count && i < 100; i++) {
         if (strcmp(packet_type, "deauth") == 0) {
@@ -1068,9 +1083,17 @@ static esp_err_t handler_api_packets_send(httpd_req_t *req) {
         }
 
         esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, frame_len, false);
+        if (err == ESP_ERR_WIFI_IF) {
+            err = esp_wifi_80211_tx(WIFI_IF_AP, frame, frame_len, false);
+        }
+
         if (err == ESP_OK) {
             sent++;
             g_packet_stats.packets_sent++;
+        } else {
+            failed++;
+            last_err = err;
+            ESP_LOGW(TAG, "Packet TX failed (%s) on try %d", esp_err_to_name(err), i);
         }
 
         if (i < count - 1) {
@@ -1082,25 +1105,47 @@ static esp_err_t handler_api_packets_send(httpd_req_t *req) {
         esp_wifi_set_mode(old_mode);
     }
 
-    char response[128];
-    snprintf(response, sizeof(response), "{\"status\":\"ok\",\"sent\":%d}", sent);
+    char response[192];
+    if (failed == 0) {
+        snprintf(response, sizeof(response), "{\"status\":\"ok\",\"sent\":%d}", sent);
+    } else {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"partial\",\"sent\":%d,\"failed\":%d,\"error\":\"%s\"}",
+                 sent, failed, esp_err_to_name(last_err));
+    }
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t handler_api_handshake_start(httpd_req_t *req) {
-    ESP_LOGI(TAG, "Handshake START requested (stub)");
+    g_packet_stats.handshake_listening = true;
+    g_packet_stats.handshake_captured = 0;
+    update_promiscuous_filter();
+
+    ESP_LOGI(TAG, "Handshake capture enabled");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, "{\"status\":\"handshake_start_stub\"}",
-                           HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req, "{\"status\":\"listening\"}", HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t handler_api_handshake_stop(httpd_req_t *req) {
-    ESP_LOGI(TAG, "Handshake STOP requested (stub)");
+    g_packet_stats.handshake_listening = false;
+    update_promiscuous_filter();
+
+    ESP_LOGI(TAG, "Handshake capture disabled");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, "{\"status\":\"handshake_stop_stub\"}",
-                           HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req, "{\"status\":\"stopped\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handler_api_handshake_status(httpd_req_t *req) {
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "{\"listening\":%s,\"captured\":%lu}",
+             g_packet_stats.handshake_listening ? "true" : "false",
+             (unsigned long)g_packet_stats.handshake_captured);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
 
 // ======================= WARDRIVE ON/OFF ==========================
@@ -1151,7 +1196,7 @@ static esp_err_t serve_app_js(httpd_req_t *req)
 static void start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 24;
     config.stack_size       = 8192;
 
     if (httpd_start(&g_httpd, &config) != ESP_OK) {
@@ -1178,6 +1223,7 @@ static void start_webserver(void)
     httpd_uri_t uri_packets_send   = { .uri = "/api/packets/send",     .method = HTTP_POST, .handler = handler_api_packets_send };
     httpd_uri_t uri_handshake_start= { .uri = "/api/handshake/start",  .method = HTTP_POST, .handler = handler_api_handshake_start };
     httpd_uri_t uri_handshake_stop = { .uri = "/api/handshake/stop",   .method = HTTP_POST, .handler = handler_api_handshake_stop };
+    httpd_uri_t uri_handshake_stat = { .uri = "/api/handshake/status", .method = HTTP_GET,  .handler = handler_api_handshake_status };
     //
     httpd_register_uri_handler(g_httpd, &uri_root);
     httpd_register_uri_handler(g_httpd, &uri_api_aps);
@@ -1197,6 +1243,7 @@ static void start_webserver(void)
     httpd_register_uri_handler(g_httpd, &uri_packets_send);
     httpd_register_uri_handler(g_httpd, &uri_handshake_start);
     httpd_register_uri_handler(g_httpd, &uri_handshake_stop);
+    httpd_register_uri_handler(g_httpd, &uri_handshake_stat);
 
     //
     // === STATIC ASSETS (no lambdas)
@@ -1262,21 +1309,40 @@ static void log_deauth_event(const uint8_t src[6], const uint8_t dst[6]) {
 }
 
 IRAM_ATTR static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT) return;
-
     const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
     const uint8_t *hdr = pkt->payload;
 
     uint8_t fc = hdr[0];
+    uint8_t frame_type = (fc & 0x0C) >> 2; // 0=mgmt, 1=ctrl, 2=data
 
-    if ((fc & 0xF0) != 0xC0 && (fc & 0xF0) != 0xA0) {
-        return;
+    if (type == WIFI_PKT_MGMT && ((fc & 0xF0) == 0xC0 || (fc & 0xF0) == 0xA0)) {
+        const uint8_t *da = &hdr[4];
+        const uint8_t *sa = &hdr[10];
+        log_deauth_event(sa, da);
     }
 
-    const uint8_t *da = &hdr[4];
-    const uint8_t *sa = &hdr[10];
+    if (g_packet_stats.handshake_listening && frame_type == 2) { // data frame
+        uint16_t len = pkt->rx_ctrl.sig_len;
+        bool to_ds = fc & 0x01;
+        bool from_ds = fc & 0x02;
+        bool qos = fc & 0x80;
 
-    log_deauth_event(sa, da);
+        int hdr_len = 24;
+        if (to_ds && from_ds) {
+            hdr_len = 30;
+        }
+        if (qos) {
+            hdr_len += 2;
+        }
+
+        if (len > hdr_len + 8) {
+            const uint8_t *llc = hdr + hdr_len;
+            if (llc[0] == 0xAA && llc[1] == 0xAA && llc[2] == 0x03 &&
+                llc[6] == 0x88 && llc[7] == 0x8E) {
+                g_packet_stats.handshake_captured++;
+            }
+        }
+    }
 }
 
 /* ========================= WARDIVE TASK ========================= */
@@ -1335,10 +1401,7 @@ static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    wifi_promiscuous_filter_t filt = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filt));
+    update_promiscuous_filter();
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
 

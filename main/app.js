@@ -1,4 +1,5 @@
 // ===== STORAGE MANAGER =====
+const activityLog = document.getElementById("log");
 const StorageManager = {
     CURRENT_SCAN_KEY: 'current_wardrive_scan',
     SAVED_SCANS_KEY: 'saved_wardrive_scans',
@@ -70,28 +71,88 @@ const StorageManager = {
 const GeoTracker = {
     lastLocation: null,
     isSupported: 'geolocation' in navigator,
+    watchId: null,
+    permissionState: 'unknown',
 
-    getPosition: function() {
+    getPosition: function(options = {}) {
+        const { silent = false } = options;
         if (!this.isSupported) return Promise.resolve(null);
 
         return new Promise(resolve => {
             navigator.geolocation.getCurrentPosition(
                 pos => {
+                    this.permissionState = 'granted';
                     this.lastLocation = {
                         lat: pos.coords.latitude,
                         lon: pos.coords.longitude,
                         accuracy: pos.coords.accuracy,
                         timestamp: pos.timestamp || Date.now()
                     };
+                    if (!silent) {
+                        log(activityLog, `🛰️ GPS fix: ${formatCoords(this.lastLocation)} (±${Math.round(this.lastLocation.accuracy)}m)`);
+                    }
                     resolve(this.lastLocation);
                 },
                 err => {
                     console.warn('Geolocation error', err);
+                    if (!silent) {
+                        log(activityLog, `✗ GPS error: ${err.message || err}`);
+                    }
+                    if (err.code === 1) {
+                        this.permissionState = 'denied';
+                    }
                     resolve(this.lastLocation);
                 },
                 { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
             );
         });
+    },
+
+    requestPermission: async function() {
+        if (!this.isSupported) {
+            log(activityLog, '✗ GPS unsupported in this browser/device');
+            return null;
+        }
+        this.permissionState = 'prompt';
+        const loc = await this.getPosition();
+        if (!loc && this.permissionState !== 'denied') {
+            this.permissionState = 'prompt';
+        }
+        return loc;
+    },
+
+    startWatch: function() {
+        if (!this.isSupported || this.watchId !== null) return;
+
+        this.watchId = navigator.geolocation.watchPosition(
+            pos => {
+                this.permissionState = 'granted';
+                this.lastLocation = {
+                    lat: pos.coords.latitude,
+                    lon: pos.coords.longitude,
+                    accuracy: pos.coords.accuracy,
+                    timestamp: pos.timestamp || Date.now()
+                };
+                updateGpsStatus(this.lastLocation);
+                log(activityLog, `🛰️ GPS updated: ${formatCoords(this.lastLocation)} (±${Math.round(this.lastLocation.accuracy)}m)`);
+            },
+            err => {
+                console.warn('watchPosition error', err);
+                if (err.code === 1) {
+                    this.permissionState = 'denied';
+                }
+                log(activityLog, `✗ GPS watch error: ${err.message || err}`);
+            },
+            { enableHighAccuracy: true, maximumAge: 4000, timeout: 5000 }
+        );
+    },
+
+    stopWatch: function() {
+        if (this.watchId !== null) {
+            navigator.geolocation.clearWatch(this.watchId);
+            this.watchId = null;
+            log(activityLog, 'ℹ️ GPS watch stopped');
+        }
     }
 };
 
@@ -270,6 +331,14 @@ function formatLastSeen(ageMs) {
     return `${hours}h ago`;
 }
 
+function prefillInjectorTarget(bssid, label = '') {
+    const input = document.getElementById("inj_bssid");
+    if (!input) return;
+    input.value = bssid;
+    const tag = label ? ` (${label})` : '';
+    log(activityLog, `🎯 Injector target set to ${bssid}${tag}`);
+}
+
 // ===== WARDRIVE CONTROL =====
 let isWardriveActive = false;
 
@@ -329,6 +398,23 @@ document.getElementById("btnSaveCurrentScan").onclick = () => {
     }
 };
 
+// ===== GPS CONTROLS =====
+document.getElementById("btnGpsEnable").onclick = async () => {
+    await GeoTracker.requestPermission();
+    GeoTracker.startWatch();
+    updateGpsStatus(GeoTracker.lastLocation);
+};
+
+document.getElementById("btnGpsOnce").onclick = async () => {
+    const loc = await GeoTracker.getPosition();
+    updateGpsStatus(loc);
+};
+
+document.getElementById("btnGpsDisable").onclick = () => {
+    GeoTracker.stopWatch();
+    updateGpsStatus(GeoTracker.lastLocation);
+};
+
 // ===== DASHBOARD UPDATE =====
 function renderDashboardTable(aps) {
     const tbody = document.getElementById("dashApList");
@@ -357,13 +443,17 @@ function renderDashboardTable(aps) {
             <td>${formatCoords(ap.location)}</td>
             <td class="${statusClass}">${getStatusText(ap.age_ms)}</td>
         `;
+        tr.classList.add('clickable-row');
+        tr.addEventListener('click', () => prefillInjectorTarget(ap.bssid, ap.ssid));
         tbody.appendChild(tr);
     });
 }
 
 async function updateDashboard() {
     try {
-        const locationPromise = GeoTracker.getPosition();
+        const locationPromise = GeoTracker.watchId !== null
+            ? Promise.resolve(GeoTracker.lastLocation)
+            : GeoTracker.getPosition({ silent: true });
 
         // Fetch APs
         const apsRes = await fetch("/api/aps");
@@ -387,10 +477,25 @@ async function updateDashboard() {
         // Update system stats
         document.getElementById("freeHeap").textContent = formatBytes(state.free_heap);
         document.getElementById("minFreeHeap").textContent = formatBytes(state.min_free_heap);
-        
+
         const heapUsagePercent = ((state.min_free_heap / state.free_heap) * 100).toFixed(1);
         document.getElementById("heapUsage").textContent = heapUsagePercent + '%';
-        
+
+        const packetCountEl = document.getElementById("packetCount");
+        if (packetCountEl) {
+            packetCountEl.textContent = state.packets_sent || 0;
+        }
+
+        const handshakeStatusEl = document.getElementById("handshakeStatus");
+        const handshakeCountEl = document.getElementById("handshakeCount");
+        if (handshakeStatusEl) {
+            handshakeStatusEl.textContent = state.handshake_listening ? 'LISTENING' : 'IDLE';
+            handshakeStatusEl.style.color = state.handshake_listening ? 'var(--cyber-green)' : 'var(--text-secondary)';
+        }
+        if (handshakeCountEl) {
+            handshakeCountEl.textContent = state.handshake_captured || 0;
+        }
+
         // Update heap usage bar
         const heapBar = document.getElementById("heapBar");
         if (heapBar) {
@@ -424,20 +529,36 @@ function updateStatus() {
 
 function updateGpsStatus(location) {
     const gpsEl = document.getElementById("gpsStatus");
+    const gpsPermission = document.getElementById("gpsPermission");
+    const gpsLastFix = document.getElementById("gpsLastFix");
     if (!gpsEl) return;
 
     if (!GeoTracker.isSupported) {
         gpsEl.textContent = "No GPS";
         gpsEl.style.color = "var(--cyber-pink)";
+        if (gpsPermission) gpsPermission.textContent = "Unsupported";
+        if (gpsLastFix) gpsLastFix.textContent = "—";
         return;
     }
 
+    if (gpsPermission) {
+        gpsPermission.textContent = GeoTracker.permissionState === 'granted'
+            ? 'Granted'
+            : (GeoTracker.permissionState === 'denied' ? 'Denied' : 'Prompt');
+        gpsPermission.style.color = GeoTracker.permissionState === 'granted'
+            ? 'var(--cyber-green)'
+            : (GeoTracker.permissionState === 'denied' ? 'var(--cyber-pink)' : 'var(--text-secondary)');
+    }
+
     if (location && location.lat !== undefined) {
-        gpsEl.textContent = formatCoords(location);
+        const coordText = `${formatCoords(location)} (±${Math.round(location.accuracy || 0)}m)`;
+        gpsEl.textContent = coordText;
         gpsEl.style.color = "var(--cyber-green)";
+        if (gpsLastFix) gpsLastFix.textContent = new Date(location.timestamp || Date.now()).toLocaleTimeString();
     } else {
-        gpsEl.textContent = "Waiting...";
+        gpsEl.textContent = GeoTracker.watchId !== null ? "Listening..." : "Waiting...";
         gpsEl.style.color = "var(--text-secondary)";
+        if (gpsLastFix) gpsLastFix.textContent = "—";
     }
 }
 
@@ -448,8 +569,11 @@ setInterval(async () => {
     }
 }, 2000);
 
+setInterval(updateHandshakePanel, 5000);
+
 // Initial update
 updateDashboard();
+updateHandshakePanel();
 
 // ===== EXPORT TAB FUNCTIONALITY =====
 function updateExportTab() {
@@ -604,6 +728,8 @@ document.getElementById("btnScan").onclick = async () => {
                     <td>${ap.seen}</td>
                     <td>${formatCoords(ap.location)}</td>
                 `;
+                tr.classList.add('clickable-row');
+                tr.addEventListener('click', () => prefillInjectorTarget(ap.bssid, ap.ssid));
                 tbody.appendChild(tr);
             });
             log(document.getElementById("log"), `✓ FOUND ${mergedAps.length} NETWORKS`);
@@ -658,6 +784,38 @@ document.getElementById("btnClass").onclick = async () => {
     }
 };
 
+// ===== HANDSHAKE LISTENER =====
+async function updateHandshakePanel() {
+    try {
+        const res = await fetch("/api/handshake/status");
+        const data = await res.json();
+        const statusEl = document.getElementById("handshakeStatus");
+        const countEl = document.getElementById("handshakeCount");
+
+        if (statusEl) {
+            statusEl.textContent = data.listening ? 'LISTENING' : 'IDLE';
+            statusEl.style.color = data.listening ? 'var(--cyber-green)' : 'var(--text-secondary)';
+        }
+        if (countEl) {
+            countEl.textContent = data.captured || 0;
+        }
+    } catch (e) {
+        console.error('Handshake status error', e);
+    }
+}
+
+document.getElementById("btnHandshakeStart").onclick = async () => {
+    await fetch("/api/handshake/start", { method: "POST" });
+    log(activityLog, "🕸️ Handshake capture enabled");
+    updateHandshakePanel();
+};
+
+document.getElementById("btnHandshakeStop").onclick = async () => {
+    await fetch("/api/handshake/stop", { method: "POST" });
+    log(activityLog, "⏹️ Handshake capture stopped");
+    updateHandshakePanel();
+};
+
 // ===== IMPROVED PACKET INJECTOR =====
 document.getElementById("btnInject").onclick = async () => {
     const logEl = document.getElementById("injectLog");
@@ -700,10 +858,11 @@ document.getElementById("btnInject").onclick = async () => {
 
         const data = await res.json();
         
-        if (data.status === "ok") {
-            logEl.textContent += `\n✓ SUCCESS: Sent ${data.sent}/${count} packets\n`;
+        if (data.status === "ok" || data.status === "partial") {
+            const failNote = data.failed ? ` (failed ${data.failed})` : '';
+            logEl.textContent += `\n✓ SUCCESS: Sent ${data.sent}/${count} packets${failNote}\n`;
             logEl.textContent += `\nResponse:\n${JSON.stringify(data, null, 2)}`;
-            log(document.getElementById("log"), `✓ INJECTED ${data.sent} ${type.toUpperCase()} PACKETS`);
+            log(document.getElementById("log"), `✓ INJECTED ${data.sent} ${type.toUpperCase()} PACKETS${failNote}`);
         } else {
             logEl.textContent += `\n✗ FAILED: ${JSON.stringify(data, null, 2)}`;
         }

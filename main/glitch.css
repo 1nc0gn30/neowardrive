@@ -286,6 +286,61 @@ body {
     border-radius: 50%;
 }
 
+.helper-text {
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+
+.helper-block {
+    background: var(--bg-elevated);
+    border: 1px dashed var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    color: var(--text-secondary);
+    margin-top: 12px;
+}
+
+.gps-meta {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    color: var(--text-secondary);
+}
+
+.meta-label {
+    color: var(--text-secondary);
+    font-weight: 700;
+    margin-right: 6px;
+}
+
+.meta-value {
+    color: var(--cyber-green);
+}
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin: 12px 0;
+}
+
+.info-block {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.clickable-row {
+    cursor: pointer;
+}
+
+.clickable-row:hover {
+    background: rgba(0, 243, 255, 0.05);
+}
+
 /* ============================================
    TABS
    ============================================ */
