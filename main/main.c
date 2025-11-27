@@ -16,6 +16,7 @@
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
@@ -1443,6 +1444,27 @@ static void wifi_init(void) {
 
     g_ap_netif  = esp_netif_create_default_wifi_ap();
     g_sta_netif = esp_netif_create_default_wifi_sta();
+
+    ESP_ERROR_CHECK(esp_netif_dhcps_stop(g_ap_netif));
+
+    esp_netif_ip_info_t ip_info;
+    memset(&ip_info, 0, sizeof(ip_info));
+    ip_info.ip.addr      = esp_ip4addr_aton("192.168.4.1");
+    ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
+    ip_info.gw.addr      = esp_ip4addr_aton("0.0.0.0");
+
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(g_ap_netif, &ip_info));
+
+    uint32_t dns_val = 0;
+    ESP_ERROR_CHECK(esp_netif_dhcps_option(
+        g_ap_netif,
+        ESP_NETIF_OP_SET,
+        ESP_NETIF_DOMAIN_NAME_SERVER,
+        &dns_val,
+        sizeof(dns_val)
+    ));
+
+    ESP_ERROR_CHECK(esp_netif_dhcps_start(g_ap_netif));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
