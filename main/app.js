@@ -2,6 +2,7 @@
 const StorageManager = {
     CURRENT_SCAN_KEY: 'current_wardrive_scan',
     SAVED_SCANS_KEY: 'saved_wardrive_scans',
+    LOCAL_APS_KEY: 'local_wardrive_aps',
     
     saveCurrentScan: function(aps, metadata = {}) {
         const scanData = {
@@ -12,6 +13,15 @@ const StorageManager = {
             metadata: metadata
         };
         localStorage.setItem(this.CURRENT_SCAN_KEY, JSON.stringify(scanData));
+    },
+
+    getLocalAps: function() {
+        const data = localStorage.getItem(this.LOCAL_APS_KEY);
+        return data ? JSON.parse(data) : [];
+    },
+
+    saveLocalAps: function(aps) {
+        localStorage.setItem(this.LOCAL_APS_KEY, JSON.stringify(aps));
     },
     
     getCurrentScan: function() {
@@ -49,22 +59,96 @@ const StorageManager = {
         if (confirm('Clear all saved scans? This cannot be undone.')) {
             localStorage.removeItem(this.SAVED_SCANS_KEY);
             localStorage.removeItem(this.CURRENT_SCAN_KEY);
+            localStorage.removeItem(this.LOCAL_APS_KEY);
             return true;
         }
         return false;
     }
 };
 
+// ===== LOCATION & CLIENT DATA MANAGEMENT =====
+const GeoTracker = {
+    lastLocation: null,
+    isSupported: 'geolocation' in navigator,
+
+    getPosition: function() {
+        if (!this.isSupported) return Promise.resolve(null);
+
+        return new Promise(resolve => {
+            navigator.geolocation.getCurrentPosition(
+                pos => {
+                    this.lastLocation = {
+                        lat: pos.coords.latitude,
+                        lon: pos.coords.longitude,
+                        accuracy: pos.coords.accuracy,
+                        timestamp: pos.timestamp || Date.now()
+                    };
+                    resolve(this.lastLocation);
+                },
+                err => {
+                    console.warn('Geolocation error', err);
+                    resolve(this.lastLocation);
+                },
+                { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
+            );
+        });
+    }
+};
+
+const ClientDataStore = {
+    mergeAps: function(newAps, location) {
+        const stored = StorageManager.getLocalAps();
+        const apMap = new Map(stored.map(ap => [ap.bssid, ap]));
+
+        newAps.forEach(ap => {
+            const existing = apMap.get(ap.bssid) || {};
+            const merged = {
+                ...existing,
+                ...ap
+            };
+
+            merged.seen = Math.max(existing.seen || 0, ap.seen || 0);
+
+            if (existing.first_seen && ap.first_seen) {
+                merged.first_seen = Math.min(existing.first_seen, ap.first_seen);
+            }
+
+            if (location) {
+                const shouldUpdateLocation = !existing.location ||
+                    (location.timestamp && location.timestamp > (existing.location.timestamp || 0));
+                if (shouldUpdateLocation) {
+                    merged.location = { ...location };
+                }
+            }
+
+            apMap.set(ap.bssid, merged);
+        });
+
+        const mergedList = Array.from(apMap.values());
+        StorageManager.saveLocalAps(mergedList);
+        StorageManager.saveCurrentScan(mergedList, { location });
+        return mergedList;
+    },
+
+    clear: function() {
+        StorageManager.saveLocalAps([]);
+        StorageManager.saveCurrentScan([], {});
+    }
+};
+
 // ===== EXPORT MANAGER =====
 const ExportManager = {
     toCSV: function(aps, filename = 'wardrive_export.csv') {
-        let csv = 'SSID,BSSID,RSSI,Channel,Security,Seen Count,First Seen,Last Seen\n';
-        
+        let csv = 'SSID,BSSID,RSSI,Channel,Security,Seen Count,First Seen,Last Seen,Latitude,Longitude,Accuracy\n';
+
         aps.forEach(ap => {
             const ssid = (ap.ssid || '<hidden>').replace(/"/g, '""');
-            csv += `"${ssid}",${ap.bssid},${ap.rssi},${ap.channel},"${ap.auth_str}",${ap.seen},${ap.first_seen},${ap.last_seen}\n`;
+            const lat = ap.location && ap.location.lat !== undefined ? ap.location.lat : '';
+            const lon = ap.location && ap.location.lon !== undefined ? ap.location.lon : '';
+            const acc = ap.location && ap.location.accuracy !== undefined ? ap.location.accuracy : '';
+            csv += `"${ssid}",${ap.bssid},${ap.rssi},${ap.channel},"${ap.auth_str}",${ap.seen},${ap.first_seen},${ap.last_seen},${lat},${lon},${acc}\n`;
         });
-        
+
         this.downloadFile(csv, filename, 'text/csv');
     },
     
@@ -74,15 +158,17 @@ const ExportManager = {
     },
     
     toKML: function(aps, filename = 'wardrive_export.kml') {
-        // Basic KML without GPS (placeholder for future GPS integration)
         let kml = '<?xml version="1.0" encoding="UTF-8"?>\n';
         kml += '<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n';
         kml += '<name>Wardrive Scan</name>\n';
-        
+
         aps.forEach((ap, idx) => {
             kml += `<Placemark>\n`;
             kml += `  <name>${ap.ssid || 'Hidden'}</name>\n`;
             kml += `  <description>BSSID: ${ap.bssid}, RSSI: ${ap.rssi}dBm, Channel: ${ap.channel}, Security: ${ap.auth_str}</description>\n`;
+            if (ap.location && ap.location.lat !== undefined && ap.location.lon !== undefined) {
+                kml += `  <Point><coordinates>${ap.location.lon},${ap.location.lat},0</coordinates></Point>\n`;
+            }
             kml += `</Placemark>\n`;
         });
         
@@ -139,6 +225,13 @@ function formatBytes(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1048576) return (bytes / 1024).toFixed(2) + ' KB';
     return (bytes / 1048576).toFixed(2) + ' MB';
+}
+
+function formatCoords(location) {
+    if (!location || location.lat === undefined || location.lon === undefined) return '—';
+    const lat = Number(location.lat).toFixed(5);
+    const lon = Number(location.lon).toFixed(5);
+    return `${lat}, ${lon}`;
 }
 
 function getSignalClass(rssi) {
@@ -220,6 +313,7 @@ document.getElementById("btnClear").onclick = async () => {
         try {
             await fetch("/api/aps/clear", { method: "POST" });
             log(document.getElementById("log"), "✓ DATA CLEARED");
+            ClientDataStore.clear();
             await updateDashboard();
         } catch(e) {
             log(document.getElementById("log"), "✗ CLEAR ERROR: " + e);
@@ -236,22 +330,57 @@ document.getElementById("btnSaveCurrentScan").onclick = () => {
 };
 
 // ===== DASHBOARD UPDATE =====
+function renderDashboardTable(aps) {
+    const tbody = document.getElementById("dashApList");
+    tbody.innerHTML = "";
+
+    if (aps.length === 0) {
+        tbody.innerHTML = '<tr class="no-data"><td colspan="9">No networks detected yet...</td></tr>';
+        return;
+    }
+
+    aps.sort((a, b) => b.rssi - a.rssi);
+
+    aps.forEach(ap => {
+        const tr = document.createElement("tr");
+        const signalClass = getSignalClass(ap.rssi);
+        const statusClass = getStatusClass(ap.age_ms);
+
+        tr.innerHTML = `
+            <td><strong>${ap.ssid}</strong></td>
+            <td style="font-family: monospace; font-size: 0.8em;">${ap.bssid}</td>
+            <td class="${signalClass}">${ap.rssi} dBm</td>
+            <td>${ap.channel}</td>
+            <td>${getSecurityBadge(ap.auth_str)}</td>
+            <td>${ap.seen}</td>
+            <td style="font-size: 0.85em;">${formatLastSeen(ap.age_ms)}</td>
+            <td>${formatCoords(ap.location)}</td>
+            <td class="${statusClass}">${getStatusText(ap.age_ms)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
 async function updateDashboard() {
     try {
+        const locationPromise = GeoTracker.getPosition();
+
         // Fetch APs
         const apsRes = await fetch("/api/aps");
         const aps = await apsRes.json();
-        
-        // Save to current scan storage
-        StorageManager.saveCurrentScan(aps);
-        
+
+        // Merge with local cache and attach GPS
+        const latestLocation = await locationPromise;
+        const mergedAps = ClientDataStore.mergeAps(aps, latestLocation);
+        updateGpsStatus(latestLocation);
+
         // Fetch state
         const stateRes = await fetch("/api/state");
         const state = await stateRes.json();
-        
+
         // Update stats
-        document.getElementById("apCount").textContent = state.ap_count;
-        document.getElementById("scanSuccess").textContent = 
+        document.getElementById("apCount").textContent = mergedAps.length;
+        document.getElementById("scanSuccess").textContent =
             `${state.successful_scans}/${state.total_scans}`;
         document.getElementById("uptime").textContent = formatUptime(state.uptime_sec);
         
@@ -271,36 +400,14 @@ async function updateDashboard() {
                  heapUsagePercent < 75 ? 'heap-warn' : 'heap-critical');
         }
         
-        // Update table
-        const tbody = document.getElementById("dashApList");
-        tbody.innerHTML = "";
-        
-        if (aps.length === 0) {
-            tbody.innerHTML = '<tr class="no-data"><td colspan="8">No networks detected yet...</td></tr>';
-        } else {
-            // Sort by RSSI (strongest first)
-            aps.sort((a, b) => b.rssi - a.rssi);
-            
-            aps.forEach(ap => {
-                const tr = document.createElement("tr");
-                const signalClass = getSignalClass(ap.rssi);
-                const statusClass = getStatusClass(ap.age_ms);
-                
-                tr.innerHTML = `
-                    <td><strong>${ap.ssid}</strong></td>
-                    <td style="font-family: monospace; font-size: 0.8em;">${ap.bssid}</td>
-                    <td class="${signalClass}">${ap.rssi} dBm</td>
-                    <td>${ap.channel}</td>
-                    <td>${getSecurityBadge(ap.auth_str)}</td>
-                    <td>${ap.seen}</td>
-                    <td style="font-size: 0.85em;">${formatLastSeen(ap.age_ms)}</td>
-                    <td class="${statusClass}">${getStatusText(ap.age_ms)}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
+        renderDashboardTable([...mergedAps]);
+        updateExportTab();
     } catch(e) {
         console.error("Dashboard update error:", e);
+        const cached = StorageManager.getLocalAps();
+        document.getElementById("apCount").textContent = cached.length;
+        updateGpsStatus(GeoTracker.lastLocation);
+        renderDashboardTable([...cached]);
     }
 }
 
@@ -312,6 +419,25 @@ function updateStatus() {
     } else {
         statusEl.textContent = "OFFLINE";
         statusEl.style.color = "var(--cyber-pink)";
+    }
+}
+
+function updateGpsStatus(location) {
+    const gpsEl = document.getElementById("gpsStatus");
+    if (!gpsEl) return;
+
+    if (!GeoTracker.isSupported) {
+        gpsEl.textContent = "No GPS";
+        gpsEl.style.color = "var(--cyber-pink)";
+        return;
+    }
+
+    if (location && location.lat !== undefined) {
+        gpsEl.textContent = formatCoords(location);
+        gpsEl.style.color = "var(--cyber-green)";
+    } else {
+        gpsEl.textContent = "Waiting...";
+        gpsEl.style.color = "var(--text-secondary)";
     }
 }
 
@@ -333,10 +459,14 @@ function updateExportTab() {
     // Update current scan info
     const currentInfo = document.getElementById("currentScanInfo");
     if (currentScan) {
+        const locationText = currentScan.metadata && currentScan.metadata.location
+            ? formatCoords(currentScan.metadata.location)
+            : 'No lock';
         currentInfo.innerHTML = `
             <div class="scan-info">
                 <strong>Last Updated:</strong> ${new Date(currentScan.timestamp).toLocaleString()}<br>
                 <strong>Networks Found:</strong> ${currentScan.apCount}<br>
+                <strong>Last GPS:</strong> ${locationText}<br>
                 <strong>Status:</strong> <span style="color: var(--cyber-green);">Ready to Export</span>
             </div>
         `;
@@ -361,6 +491,7 @@ function updateExportTab() {
                 </div>
                 <div class="scan-item-details">
                     ${scan.apCount} networks
+                    ${scan.metadata && scan.metadata.location ? `· GPS: ${formatCoords(scan.metadata.location)}` : ''}
                 </div>
                 <div class="scan-item-actions">
                     <button onclick="exportSavedScan(${index}, 'csv')" class="btn-mini btn-primary">CSV</button>
@@ -435,6 +566,7 @@ function deleteSavedScan(index) {
 
 document.getElementById("btnClearStorage").onclick = () => {
     if (StorageManager.clearAll()) {
+        ClientDataStore.clear();
         updateExportTab();
         log(document.getElementById("log"), "✓ CLEARED ALL STORAGE");
     }
@@ -446,18 +578,22 @@ document.getElementById("btnScan").onclick = async () => {
         log(document.getElementById("log"), "⟳ SCANNING...");
         
         await fetch("/api/scan/once", { method: "POST" });
-        
+
         const res = await fetch("/api/aps");
         const aps = await res.json();
+
+        const latestLocation = await GeoTracker.getPosition();
+        const mergedAps = ClientDataStore.mergeAps(aps, latestLocation);
+        updateGpsStatus(latestLocation);
 
         const tbody = document.getElementById("apList");
         tbody.innerHTML = "";
 
-        if (aps.length === 0) {
-            tbody.innerHTML = '<tr class="no-data"><td colspan="6">No APs found</td></tr>';
+        if (mergedAps.length === 0) {
+            tbody.innerHTML = '<tr class="no-data"><td colspan="7">No APs found</td></tr>';
             log(document.getElementById("log"), "✗ NO NETWORKS DETECTED");
         } else {
-            aps.forEach(ap => {
+            mergedAps.forEach(ap => {
                 const tr = document.createElement("tr");
                 tr.innerHTML = `
                     <td>${ap.ssid}</td>
@@ -466,10 +602,11 @@ document.getElementById("btnScan").onclick = async () => {
                     <td>${ap.channel}</td>
                     <td>${ap.auth_str}</td>
                     <td>${ap.seen}</td>
+                    <td>${formatCoords(ap.location)}</td>
                 `;
                 tbody.appendChild(tr);
             });
-            log(document.getElementById("log"), `✓ FOUND ${aps.length} NETWORKS`);
+            log(document.getElementById("log"), `✓ FOUND ${mergedAps.length} NETWORKS`);
         }
     } catch(e) {
         log(document.getElementById("log"), "✗ SCAN ERROR: " + e);
