@@ -1449,8 +1449,15 @@ static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     wifi_config_t ap_cfg = {0};
-    size_t       ssid_len = strnlen(AP_SSID, sizeof(ap_cfg.ap.ssid) - 1);
-    size_t       pass_len = strnlen(AP_PASS, sizeof(ap_cfg.ap.password) - 1);
+    size_t       ssid_len = strlen(AP_SSID);
+    if (ssid_len >= sizeof(ap_cfg.ap.ssid)) {
+        ssid_len = sizeof(ap_cfg.ap.ssid) - 1;
+    }
+
+    size_t pass_len = strlen(AP_PASS);
+    if (pass_len >= sizeof(ap_cfg.ap.password)) {
+        pass_len = sizeof(ap_cfg.ap.password) - 1;
+    }
 
     strlcpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid));
     ap_cfg.ap.ssid_len       = ssid_len;
