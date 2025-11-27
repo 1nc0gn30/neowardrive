@@ -1445,48 +1445,59 @@ static void wifi_init(void) {
     g_ap_netif  = esp_netif_create_default_wifi_ap();
     g_sta_netif = esp_netif_create_default_wifi_sta();
 
-    ESP_ERROR_CHECK(esp_netif_dhcps_stop(g_ap_netif));
-
-    esp_netif_ip_info_t ip_info;
-    memset(&ip_info, 0, sizeof(ip_info));
-    ip_info.ip.addr      = esp_ip4addr_aton("192.168.4.1");
-    ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
-    ip_info.gw.addr      = esp_ip4addr_aton("0.0.0.0");
-
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(g_ap_netif, &ip_info));
-
-    uint32_t dns_val = 0;
-    ESP_ERROR_CHECK(esp_netif_dhcps_option(
-        g_ap_netif,
-        ESP_NETIF_OP_SET,
-        ESP_NETIF_DOMAIN_NAME_SERVER,
-        &dns_val,
-        sizeof(dns_val)
-    ));
-
-    ESP_ERROR_CHECK(esp_netif_dhcps_start(g_ap_netif));
-
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     wifi_config_t ap_cfg = {0};
-    strncpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid));
-    ap_cfg.ap.ssid_len       = strlen(AP_SSID);
+    size_t       ssid_len = strlen(AP_SSID);
+    size_t       pass_len = strlen(AP_PASS);
+
+    if (ssid_len == 0 || ssid_len > sizeof(ap_cfg.ap.ssid) - 1) {
+        ESP_LOGE(TAG, "Invalid AP SSID length: %zu", ssid_len);
+        abort();
+    }
+
+    if (pass_len > sizeof(ap_cfg.ap.password) - 1) {
+        ESP_LOGE(TAG, "Invalid AP password length: %zu", pass_len);
+        abort();
+    }
+
+    strlcpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid));
+    ap_cfg.ap.ssid_len       = ssid_len;
     ap_cfg.ap.channel        = 1;
-    strncpy((char *)ap_cfg.ap.password, AP_PASS, sizeof(ap_cfg.ap.password));
+    strlcpy((char *)ap_cfg.ap.password, AP_PASS, sizeof(ap_cfg.ap.password));
     ap_cfg.ap.max_connection = 4;
-    ap_cfg.ap.authmode       = strlen(AP_PASS) ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
+    ap_cfg.ap.authmode       = pass_len ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
     ap_cfg.ap.pmf_cfg.required = false;
 
     // ALWAYS use APSTA mode for wardrive scanning to work
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    
+
     // Configure empty STA (not connecting to anything, just enabling STA interface for scanning)
     wifi_config_t sta_cfg = {0};
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
-    
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    esp_netif_ip_info_t ip_info = {
+        .ip      = { .addr = esp_ip4addr_aton("192.168.4.1") },
+        .netmask = { .addr = esp_ip4addr_aton("255.255.255.0") },
+        .gw      = { .addr = esp_ip4addr_aton("0.0.0.0") },
+    };
+
+    ESP_ERROR_CHECK(esp_netif_dhcps_stop(g_ap_netif));
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(g_ap_netif, &ip_info));
+
+    uint32_t dns_zero = 0;
+    ESP_ERROR_CHECK(esp_netif_dhcps_option(
+        g_ap_netif,
+        ESP_NETIF_OP_SET,
+        ESP_NETIF_DOMAIN_NAME_SERVER,
+        &dns_zero,
+        sizeof(dns_zero)
+    ));
+
+    ESP_ERROR_CHECK(esp_netif_dhcps_start(g_ap_netif));
 
     update_promiscuous_filter();
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
