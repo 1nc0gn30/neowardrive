@@ -76,7 +76,7 @@ const GeoTracker = {
     isSecure: window.isSecureContext,
     networkFallbackAttempted: false,
 
-    fetchNetworkLocation: async function() {
+    fetchNetworkLocation: async function({ silent = false } = {}) {
         // Fallback that works on insecure origins (coarse IP-based location)
         // Requires external connectivity but avoids the secure-origin restriction
         try {
@@ -93,11 +93,16 @@ const GeoTracker = {
                 timestamp: Date.now(),
                 source: 'network'
             };
-            log(activityLog, `🛰️ Fallback location: ${formatCoords(this.lastLocation)} (network)`);
+            if (!silent) {
+                log(activityLog, `🛰️ Fallback location: ${formatCoords(this.lastLocation)} (network)`);
+            }
+            updateGpsStatus(this.lastLocation);
             return this.lastLocation;
         } catch (err) {
             console.warn('Network geolocation fallback failed', err);
-            log(activityLog, '✗ GPS fallback failed — internet required for coarse location');
+            if (!silent) {
+                log(activityLog, '✗ GPS fallback failed — internet required for coarse location');
+            }
             return null;
         }
     },
@@ -110,15 +115,13 @@ const GeoTracker = {
         if (!this.isSecure) {
             this.permissionState = 'restricted';
 
-            if (!this.networkFallbackAttempted) {
-                this.networkFallbackAttempted = true;
-                const netLoc = await this.fetchNetworkLocation();
-                if (netLoc) {
-                    if (!silent) {
-                        log(activityLog, 'ℹ️ Precise GPS blocked on HTTP; using coarse network location.');
-                    }
-                    return netLoc;
+            const netLoc = await this.fetchNetworkLocation({ silent });
+            if (netLoc) {
+                if (!silent && !this.networkFallbackAttempted) {
+                    log(activityLog, 'ℹ️ Precise GPS blocked on HTTP; using coarse network location.');
                 }
+                this.networkFallbackAttempted = true;
+                return netLoc;
             }
 
             if (!silent) {
@@ -177,11 +180,18 @@ const GeoTracker = {
         if (!this.isSupported || this.watchId !== null) return;
 
         if (!this.isSecure) {
-            log(activityLog, 'ℹ️ Live GPS watch blocked on HTTP; using one-time network lookup instead.');
-            if (!this.networkFallbackAttempted) {
-                this.networkFallbackAttempted = true;
-                this.fetchNetworkLocation();
-            }
+            log(activityLog, 'ℹ️ Live GPS watch blocked on HTTP; starting periodic network lookups instead.');
+
+            const doUpdate = async (silent = false) => {
+                const loc = await this.fetchNetworkLocation({ silent });
+                if (loc && !silent) {
+                    log(activityLog, `🛰️ Network location update: ${formatCoords(loc)} (coarse)`);
+                }
+                updateGpsStatus(this.lastLocation);
+            };
+
+            doUpdate(false);
+            this.watchId = setInterval(() => doUpdate(true), 15000);
             return;
         }
 
@@ -210,7 +220,11 @@ const GeoTracker = {
 
     stopWatch: function() {
         if (this.watchId !== null) {
-            navigator.geolocation.clearWatch(this.watchId);
+            if (this.isSecure) {
+                navigator.geolocation.clearWatch(this.watchId);
+            } else {
+                clearInterval(this.watchId);
+            }
             this.watchId = null;
             log(activityLog, 'ℹ️ GPS watch stopped');
         }
