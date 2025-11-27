@@ -103,54 +103,61 @@ const GeoTracker = {
     },
 
     getPosition: async function(options = {}) {
-    const { silent = false } = options;
-    if (!this.isSupported) return null;
+        const { silent = false } = options;
+        if (!this.isSupported) return null;
 
-    // Insecure origin fallback
-    if (!this.isSecure && !this.networkFallbackAttempted) {
-        this.networkFallbackAttempted = true;
-        const netLoc = await this.fetchNetworkLocation();
-        if (netLoc) return netLoc;
-    }
+        // Insecure origin fallback first, without calling navigator.geolocation (which throws)
+        if (!this.isSecure) {
+            this.permissionState = 'restricted';
 
-    return new Promise(resolve => {
-        navigator.geolocation.getCurrentPosition(
-            pos => {
-                this.permissionState = 'granted';
-                this.lastLocation = {
-                    lat: pos.coords.latitude,
-                    lon: pos.coords.longitude,
-                    accuracy: pos.coords.accuracy,
-                    timestamp: pos.timestamp || Date.now()
-                };
-                if (!silent) {
-                    log(activityLog,
-                        `🛰️ GPS fix: ${formatCoords(this.lastLocation)} (±${Math.round(this.lastLocation.accuracy)}m)`
-                    );
+            if (!this.networkFallbackAttempted) {
+                this.networkFallbackAttempted = true;
+                const netLoc = await this.fetchNetworkLocation();
+                if (netLoc) {
+                    if (!silent) {
+                        log(activityLog, 'ℹ️ Precise GPS blocked on HTTP; using coarse network location.');
+                    }
+                    return netLoc;
                 }
-                resolve(this.lastLocation);
-            },
-            err => {
-                console.warn('Geolocation error', err);
-                if (!silent) {
-                    log(activityLog, `✗ GPS error: ${err.message || err}`);
-                }
-                if (err.code === 1) {
-                    this.permissionState = 'denied';
-                } else if (!this.isSecure && !this.networkFallbackAttempted) {
-                    // Retry fallback
-                    this.networkFallbackAttempted = true;
-                    this.fetchNetworkLocation().then(fallback =>
-                        resolve(fallback || this.lastLocation)
-                    );
-                    return;
-                }
-                resolve(this.lastLocation);
-            },
-            { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
-        );
-    });
-},
+            }
+
+            if (!silent) {
+                log(activityLog, '✗ Precise GPS blocked: open the UI via HTTPS or enable mobile data for fallback.');
+            }
+            return this.lastLocation;
+        }
+
+        return new Promise(resolve => {
+            navigator.geolocation.getCurrentPosition(
+                pos => {
+                    this.permissionState = 'granted';
+                    this.lastLocation = {
+                        lat: pos.coords.latitude,
+                        lon: pos.coords.longitude,
+                        accuracy: pos.coords.accuracy,
+                        timestamp: pos.timestamp || Date.now()
+                    };
+                    if (!silent) {
+                        log(activityLog,
+                            `🛰️ GPS fix: ${formatCoords(this.lastLocation)} (±${Math.round(this.lastLocation.accuracy)}m)`
+                        );
+                    }
+                    resolve(this.lastLocation);
+                },
+                err => {
+                    console.warn('Geolocation error', err);
+                    if (!silent) {
+                        log(activityLog, `✗ GPS error: ${err.message || err}`);
+                    }
+                    if (err.code === 1) {
+                        this.permissionState = 'denied';
+                    }
+                    resolve(this.lastLocation);
+                },
+                { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
+            );
+        });
+    },
 
 
     requestPermission: async function() {
@@ -169,10 +176,12 @@ const GeoTracker = {
     startWatch: function() {
         if (!this.isSupported || this.watchId !== null) return;
 
-        if (!this.isSecure && !this.networkFallbackAttempted) {
-            // On insecure origins watchPosition will throw immediately, so lean on the fallback once
-            this.networkFallbackAttempted = true;
-            this.fetchNetworkLocation();
+        if (!this.isSecure) {
+            log(activityLog, 'ℹ️ Live GPS watch blocked on HTTP; using one-time network lookup instead.');
+            if (!this.networkFallbackAttempted) {
+                this.networkFallbackAttempted = true;
+                this.fetchNetworkLocation();
+            }
             return;
         }
 
@@ -594,12 +603,15 @@ function updateGpsStatus(location) {
     }
 
     if (gpsPermission) {
-        gpsPermission.textContent = GeoTracker.permissionState === 'granted'
+        const state = GeoTracker.permissionState;
+        gpsPermission.textContent = state === 'granted'
             ? 'Granted'
-            : (GeoTracker.permissionState === 'denied' ? 'Denied' : 'Prompt');
-        gpsPermission.style.color = GeoTracker.permissionState === 'granted'
+            : (state === 'denied' ? 'Denied'
+                : (state === 'restricted' ? 'Restricted (HTTP)' : 'Prompt'));
+        gpsPermission.style.color = state === 'granted'
             ? 'var(--cyber-green)'
-            : (GeoTracker.permissionState === 'denied' ? 'var(--cyber-pink)' : 'var(--text-secondary)');
+            : (state === 'denied' ? 'var(--cyber-pink)'
+                : (state === 'restricted' ? 'var(--cyber-pink)' : 'var(--text-secondary)'));
     }
 
     if (location && location.lat !== undefined) {
@@ -826,13 +838,55 @@ document.getElementById("btnDeauth").onclick = async () => {
 };
 
 // ===== CLASSIFICATIONS =====
+const CLASS_LOOKUP = {
+    0: { name: 'Unknown', detail: 'Not enough data to classify' },
+    1: { name: 'Home/Office', detail: 'Default home/office profile' },
+    2: { name: 'Guest Network', detail: 'Guest/visitor SSID keywords detected' },
+    3: { name: 'Enterprise', detail: 'Enterprise naming or WPA3 security' },
+    4: { name: 'Mobile Hotspot', detail: 'Likely phone hotspot identifiers' },
+    5: { name: 'IoT/Smart Device', detail: 'IoT/camera/vendor strings spotted' },
+    6: { name: 'Suspicious Open', detail: 'Open high-power network with public naming' }
+};
+
+function renderClassifications(list) {
+    const tbody = document.getElementById("classList");
+    if (!tbody) return;
+
+    tbody.innerHTML = "";
+
+    if (!Array.isArray(list) || list.length === 0) {
+        tbody.innerHTML = '<tr class="no-data"><td colspan="6">No classification data yet.</td></tr>';
+        return;
+    }
+
+    list.sort((a, b) => (a.class_id ?? a.class ?? 0) - (b.class_id ?? b.class ?? 0));
+
+    list.forEach(item => {
+        const classId = item.class_id ?? item.class ?? 0;
+        const meta = CLASS_LOOKUP[classId] || { name: item.class_name || 'Unknown', detail: item.class_detail || '—' };
+        const className = item.class_name || meta.name;
+        const classDetail = item.class_detail || meta.detail;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${item.ssid || '<hidden>'}</td>
+            <td style="font-family: monospace; font-size: 0.85em;">${item.bssid || '—'}</td>
+            <td><strong>${className}</strong></td>
+            <td style="font-size: 0.85em;">${classDetail}</td>
+            <td class="${getSignalClass(item.rssi || -100)}">${item.rssi ?? '—'} dBm</td>
+            <td>${item.channel ?? '—'}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
 document.getElementById("btnClass").onclick = async () => {
     try {
         const res = await fetch("/api/classifications");
         const data = await res.json();
-        document.getElementById("classList").textContent = JSON.stringify(data, null, 2);
+        renderClassifications(data);
     } catch(e) {
-        document.getElementById("classList").textContent = "Error: " + e;
+        const tbody = document.getElementById("classList");
+        if (tbody) tbody.innerHTML = `<tr class="no-data"><td colspan="6">Error: ${e}</td></tr>`;
     }
 };
 

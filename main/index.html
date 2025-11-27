@@ -364,8 +364,27 @@
 <section id="classify" class="tab">
     <div class="card">
         <h2>🏷️ AP Classification</h2>
-        <button id="btnClass" class="btn btn-primary">Refresh</button>
-        <pre id="classList" class="log-window"></pre>
+        <div class="button-grid" style="margin-bottom: 12px;">
+            <button id="btnClass" class="btn btn-primary">Refresh</button>
+        </div>
+        <div class="table-wrapper">
+            <table class="ap-table">
+                <thead>
+                    <tr>
+                        <th>SSID</th>
+                        <th>BSSID</th>
+                        <th>Classification</th>
+                        <th>Detail</th>
+                        <th>RSSI</th>
+                        <th>Channel</th>
+                    </tr>
+                </thead>
+                <tbody id="classList">
+                    <tr class="no-data"><td colspan="6">No classification data yet.</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <p class="helper-text">Class names are derived from SSID patterns and security mode. Use this view to spot guest, IoT, or suspicious open networks quickly.</p>
     </div>
 </section>
 
