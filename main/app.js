@@ -73,10 +73,46 @@ const GeoTracker = {
     isSupported: 'geolocation' in navigator,
     watchId: null,
     permissionState: 'unknown',
+    isSecure: window.isSecureContext,
+    networkFallbackAttempted: false,
+
+    fetchNetworkLocation: async function() {
+        // Fallback that works on insecure origins (coarse IP-based location)
+        // Requires external connectivity but avoids the secure-origin restriction
+        try {
+            const resp = await fetch('https://ipapi.co/json/');
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (!data.latitude || !data.longitude) throw new Error('No coordinates in response');
+
+            this.permissionState = 'granted';
+            this.lastLocation = {
+                lat: data.latitude,
+                lon: data.longitude,
+                accuracy: data.utc_offset ? 5000 : 5000, // coarse estimate
+                timestamp: Date.now(),
+                source: 'network'
+            };
+            log(activityLog, `🛰️ Fallback location: ${formatCoords(this.lastLocation)} (network)`);
+            return this.lastLocation;
+        } catch (err) {
+            console.warn('Network geolocation fallback failed', err);
+            log(activityLog, '✗ GPS fallback failed — internet required for coarse location');
+            return null;
+        }
+    },
 
     getPosition: function(options = {}) {
         const { silent = false } = options;
         if (!this.isSupported) return Promise.resolve(null);
+
+        // If we're running in an insecure context, the browser will reject geolocation.
+        // Try a network/IP-based lookup so the table still gets a location.
+        if (!this.isSecure && !this.networkFallbackAttempted) {
+            this.networkFallbackAttempted = true;
+            const netLoc = await this.fetchNetworkLocation();
+            if (netLoc) return netLoc;
+        }
 
         return new Promise(resolve => {
             navigator.geolocation.getCurrentPosition(
@@ -100,6 +136,11 @@ const GeoTracker = {
                     }
                     if (err.code === 1) {
                         this.permissionState = 'denied';
+                    } else if (!this.isSecure && !this.networkFallbackAttempted) {
+                        // Retry with fallback if the browser rejected the insecure origin
+                        this.networkFallbackAttempted = true;
+                        this.fetchNetworkLocation().then(fallback => resolve(fallback || this.lastLocation));
+                        return;
                     }
                     resolve(this.lastLocation);
                 },
@@ -123,6 +164,13 @@ const GeoTracker = {
 
     startWatch: function() {
         if (!this.isSupported || this.watchId !== null) return;
+
+        if (!this.isSecure && !this.networkFallbackAttempted) {
+            // On insecure origins watchPosition will throw immediately, so lean on the fallback once
+            this.networkFallbackAttempted = true;
+            this.fetchNetworkLocation();
+            return;
+        }
 
         this.watchId = navigator.geolocation.watchPosition(
             pos => {
