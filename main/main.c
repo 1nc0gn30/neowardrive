@@ -67,6 +67,37 @@ typedef enum {
     AP_CLASS_SUSPECT
 } ap_class_t;
 
+static const char *ap_class_name(ap_class_t cls) {
+    switch (cls) {
+        case AP_CLASS_HOME:       return "Home/Office";
+        case AP_CLASS_GUEST:      return "Guest Network";
+        case AP_CLASS_ENTERPRISE: return "Enterprise";
+        case AP_CLASS_HOTSPOT:    return "Mobile Hotspot";
+        case AP_CLASS_IOT:        return "IoT/Smart Device";
+        case AP_CLASS_SUSPECT:    return "Suspicious Open";
+        default:                  return "Unknown";
+    }
+}
+
+static const char *ap_class_detail(ap_class_t cls) {
+    switch (cls) {
+        case AP_CLASS_HOME:
+            return "Default home/office profile";
+        case AP_CLASS_GUEST:
+            return "Guest/visitor SSID keywords detected";
+        case AP_CLASS_ENTERPRISE:
+            return "Enterprise naming or WPA3 security";
+        case AP_CLASS_HOTSPOT:
+            return "Likely phone hotspot identifiers";
+        case AP_CLASS_IOT:
+            return "IoT/camera/vendor strings spotted";
+        case AP_CLASS_SUSPECT:
+            return "Open high-power network with public naming";
+        default:
+            return "Not enough data to classify";
+    }
+}
+
 typedef struct {
     bool     in_use;
     uint8_t  bssid[6];
@@ -934,11 +965,14 @@ static esp_err_t handler_api_classifications(httpd_req_t *req) {
             mac_to_str(ap->bssid, bssid_str, sizeof(bssid_str));
 
             off += snprintf(buf + off, JSON_BUF_SIZE - off,
-                            "{\"ssid\":\"%s\",\"bssid\":\"%s\",\"class\":%d,"
+                            "{\"ssid\":\"%s\",\"bssid\":\"%s\","
+                            "\"class_id\":%d,\"class_name\":\"%s\",\"class_detail\":\"%s\"," 
                             "\"rssi\":%d,\"channel\":%u}",
                             ap->ssid[0] ? ap->ssid : "<hidden>",
                             bssid_str,
                             ap->classification,
+                            ap_class_name(ap->classification),
+                            ap_class_detail(ap->classification),
                             (int)ap->rssi,
                             (unsigned)ap->channel);
         }
