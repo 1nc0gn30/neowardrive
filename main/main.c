@@ -1476,10 +1476,12 @@ static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    // Keep gateway aligned with the AP IP so clients don't drop the connection
+    // due to an invalid/default gateway address.
     esp_netif_ip_info_t ip_info = {
         .ip      = { .addr = esp_ip4addr_aton("192.168.4.1") },
         .netmask = { .addr = esp_ip4addr_aton("255.255.255.0") },
-        .gw      = { .addr = esp_ip4addr_aton("0.0.0.0") },
+        .gw      = { .addr = esp_ip4addr_aton("192.168.4.1") },
     };
 
     ESP_ERROR_CHECK(esp_netif_dhcps_stop(g_ap_netif));
