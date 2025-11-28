@@ -1003,9 +1003,12 @@ static esp_err_t http_collect_handler(esp_http_client_event_t *evt) {
 }
 
 static esp_err_t handler_api_gps_network(httpd_req_t *req) {
+
+    // === FIX: check STA connection without using undefined macros ===
     if (!g_sta_connected) {
-        httpd_resp_send_err(req, HTTPD_503_SERVICE_UNAVAILABLE, "sta not connected");
-        return ESP_FAIL;
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"error\":\"sta not connected\"}", HTTPD_RESP_USE_STRLEN);
     }
 
     char body[512] = {0};
@@ -1019,17 +1022,19 @@ static esp_err_t handler_api_gps_network(httpd_req_t *req) {
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "http init failed");
-        return ESP_FAIL;
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req, "{\"error\":\"http init failed\"}", HTTPD_RESP_USE_STRLEN);
     }
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
+    // === FIX: replace undefined HTTPD_502_BAD_GATEWAY ===
     if (err != ESP_OK || status != 200 || hb.len == 0) {
-        httpd_resp_send_err(req, HTTPD_502_BAD_GATEWAY, "geo lookup failed");
-        return ESP_FAIL;
+        httpd_resp_set_status(req, "502 Bad Gateway");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"error\":\"geo lookup failed\"}", HTTPD_RESP_USE_STRLEN);
     }
 
     httpd_resp_set_type(req, "application/json");
