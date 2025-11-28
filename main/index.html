@@ -147,6 +147,35 @@
         </div>
     </div>
 
+    <!-- Hotspot & WiFi Uplink -->
+    <div class="card">
+        <h2>📶 Hotspot Uplink</h2>
+        <p class="helper-text">Scan for nearby hotspots and connect the ESP32's STA interface so GPS fallbacks use the uplink even if your phone is offline.</p>
+        <div class="wifi-grid">
+            <div class="wifi-form">
+                <div class="form-row">
+                    <label for="wifiSsid">SSID</label>
+                    <input id="wifiSsid" type="text" placeholder="Hotspot name" />
+                </div>
+                <div class="form-row">
+                    <label for="wifiPass">Password</label>
+                    <input id="wifiPass" type="password" placeholder="Optional" />
+                </div>
+                <div class="button-grid">
+                    <button id="btnWifiScan" class="btn btn-secondary"><span class="btn-icon">🔍</span> Scan WiFi</button>
+                    <button id="btnWifiConnect" class="btn btn-primary"><span class="btn-icon">📡</span> Connect</button>
+                </div>
+                <div class="wifi-status" id="wifiStatusText">Not connected</div>
+            </div>
+            <div class="wifi-scan">
+                <div class="wifi-scan-header">Nearby Networks</div>
+                <ul id="wifiScanList" class="wifi-list">
+                    <li class="wifi-row">Press Scan to search for uplink networks</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
     <!-- Live Network Table -->
     <div class="card">
         <div class="card-header">
