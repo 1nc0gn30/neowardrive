@@ -46,9 +46,9 @@ static const char *AP_SSID = "NeoWardrive";
 static const char *AP_PASS = "neo_wardrive_01";
 
 // IMPORTANT: Always use APSTA mode for scanning to work
-#define ENABLE_STA_MODE true  
-#define STA_SSID "RedPill"  
-#define STA_PASS "W4RDR1V3!" 
+#define ENABLE_STA_MODE true
+#define STA_SSID "RedPill"
+#define STA_PASS "W4RDR1V3!"
 
 // ========================= TYPES ===========================
 extern const unsigned char index_html_start[] asm("_binary_index_html_start");
@@ -163,7 +163,6 @@ static int g_ap_count = 0;
 static uint32_t g_ap_insert_index = 0;
 
 // Wardrive state
-static bool      g_wardrive_enabled = false; // currently unused
 static bool      g_wardrive_on      = false;
 static httpd_handle_t g_httpd       = NULL;
 static stats_t   g_stats            = {0};
@@ -735,13 +734,6 @@ static void craft_probe_request(uint8_t *frame, size_t *len, const char *ssid) {
 }
 
 // ========================= HTML UI =========================
-
-static esp_err_t handler_root(httpd_req_t *req) {
-    const size_t html_size = index_html_end - index_html_start;
-
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, (const char *)index_html_start, html_size);
-}
 
 static esp_err_t handler_api_aps(httpd_req_t *req) {
     char *json_buf = malloc(JSON_BUF_SIZE);
@@ -1503,13 +1495,18 @@ static esp_err_t handler_success_txt(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// ========================= UPDATE start_webserver() =========================
-// REPLACE your entire start_webserver() function with this version:
+static void register_uri_checked(httpd_handle_t server, const httpd_uri_t *uri) {
+    esp_err_t err = httpd_register_uri_handler(server, uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register %s: %s", uri->uri, esp_err_to_name(err));
+    }
+}
 
+// ========================= UPDATE start_webserver() =========================
 static void start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 30;  // Increased from 24 for captive portal
+    config.max_uri_handlers = 40;  // Ensure we have room for all handlers
     config.stack_size       = 8192;
 
     if (httpd_start(&g_httpd, &config) != ESP_OK) {
@@ -1519,25 +1516,24 @@ static void start_webserver(void)
 
     // === CAPTIVE PORTAL HANDLERS (Register these FIRST) ===
     httpd_uri_t uri_generate_204 = { .uri = "/generate_204", .method = HTTP_GET, .handler = handler_generate_204 };
-    httpd_register_uri_handler(g_httpd, &uri_generate_204);
+    register_uri_checked(g_httpd, &uri_generate_204);
     
     httpd_uri_t uri_gen_204 = { .uri = "/gen_204", .method = HTTP_GET, .handler = handler_generate_204 };
-    httpd_register_uri_handler(g_httpd, &uri_gen_204);
+    register_uri_checked(g_httpd, &uri_gen_204);
     
     httpd_uri_t uri_hotspot_detect = { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = handler_hotspot_detect };
-    httpd_register_uri_handler(g_httpd, &uri_hotspot_detect);
+    register_uri_checked(g_httpd, &uri_hotspot_detect);
     
     httpd_uri_t uri_library_test = { .uri = "/library/test/success.html", .method = HTTP_GET, .handler = handler_hotspot_detect };
-    httpd_register_uri_handler(g_httpd, &uri_library_test);
+    register_uri_checked(g_httpd, &uri_library_test);
     
     httpd_uri_t uri_ncsi = { .uri = "/ncsi.txt", .method = HTTP_GET, .handler = handler_success_txt };
-    httpd_register_uri_handler(g_httpd, &uri_ncsi);
+    register_uri_checked(g_httpd, &uri_ncsi);
     
     httpd_uri_t uri_connecttest = { .uri = "/connecttest.txt", .method = HTTP_GET, .handler = handler_success_txt };
-    httpd_register_uri_handler(g_httpd, &uri_connecttest);
+    register_uri_checked(g_httpd, &uri_connecttest);
 
     // === YOUR NORMAL HANDLERS (keep all existing ones) ===
-    httpd_uri_t uri_root           = { .uri = "/",                     .method = HTTP_GET,  .handler = handler_root };
     httpd_uri_t uri_api_aps        = { .uri = "/api/aps",              .method = HTTP_GET,  .handler = handler_api_aps };
     httpd_uri_t uri_api_state      = { .uri = "/api/state",            .method = HTTP_GET,  .handler = handler_api_state };
     httpd_uri_t uri_api_channels   = { .uri = "/api/channels",         .method = HTTP_GET,  .handler = handler_api_channels };
@@ -1561,29 +1557,28 @@ static void start_webserver(void)
     httpd_uri_t uri_handshake_stop = { .uri = "/api/handshake/stop",   .method = HTTP_POST, .handler = handler_api_handshake_stop };
     httpd_uri_t uri_handshake_stat = { .uri = "/api/handshake/status", .method = HTTP_GET,  .handler = handler_api_handshake_status };
 
-    httpd_register_uri_handler(g_httpd, &uri_root);
-    httpd_register_uri_handler(g_httpd, &uri_api_aps);
-    httpd_register_uri_handler(g_httpd, &uri_api_state);
-    httpd_register_uri_handler(g_httpd, &uri_api_channels);
-    httpd_register_uri_handler(g_httpd, &uri_api_clear);
-    httpd_register_uri_handler(g_httpd, &uri_wardrive_on);
-    httpd_register_uri_handler(g_httpd, &uri_wardrive_off);
-    httpd_register_uri_handler(g_httpd, &uri_scan_once);
-    httpd_register_uri_handler(g_httpd, &uri_export_csv);
-    httpd_register_uri_handler(g_httpd, &uri_security_analysis);
-    httpd_register_uri_handler(g_httpd, &uri_channel_congestion);
-    httpd_register_uri_handler(g_httpd, &uri_rogue_detection);
-    httpd_register_uri_handler(g_httpd, &uri_vulnerabilities);
-    httpd_register_uri_handler(g_httpd, &uri_classifications);
-    httpd_register_uri_handler(g_httpd, &uri_deauth);
-    httpd_register_uri_handler(g_httpd, &uri_packets_send);
-    httpd_register_uri_handler(g_httpd, &uri_wifi_scan);
-    httpd_register_uri_handler(g_httpd, &uri_wifi_connect);
-    httpd_register_uri_handler(g_httpd, &uri_wifi_status);
-    httpd_register_uri_handler(g_httpd, &uri_gps_network);
-    httpd_register_uri_handler(g_httpd, &uri_handshake_start);
-    httpd_register_uri_handler(g_httpd, &uri_handshake_stop);
-    httpd_register_uri_handler(g_httpd, &uri_handshake_stat);
+    register_uri_checked(g_httpd, &uri_api_aps);
+    register_uri_checked(g_httpd, &uri_api_state);
+    register_uri_checked(g_httpd, &uri_api_channels);
+    register_uri_checked(g_httpd, &uri_api_clear);
+    register_uri_checked(g_httpd, &uri_wardrive_on);
+    register_uri_checked(g_httpd, &uri_wardrive_off);
+    register_uri_checked(g_httpd, &uri_scan_once);
+    register_uri_checked(g_httpd, &uri_export_csv);
+    register_uri_checked(g_httpd, &uri_security_analysis);
+    register_uri_checked(g_httpd, &uri_channel_congestion);
+    register_uri_checked(g_httpd, &uri_rogue_detection);
+    register_uri_checked(g_httpd, &uri_vulnerabilities);
+    register_uri_checked(g_httpd, &uri_classifications);
+    register_uri_checked(g_httpd, &uri_deauth);
+    register_uri_checked(g_httpd, &uri_packets_send);
+    register_uri_checked(g_httpd, &uri_wifi_scan);
+    register_uri_checked(g_httpd, &uri_wifi_connect);
+    register_uri_checked(g_httpd, &uri_wifi_status);
+    register_uri_checked(g_httpd, &uri_gps_network);
+    register_uri_checked(g_httpd, &uri_handshake_start);
+    register_uri_checked(g_httpd, &uri_handshake_stop);
+    register_uri_checked(g_httpd, &uri_handshake_stat);
 
     // === STATIC ASSETS ===
     httpd_uri_t uri_index = {
@@ -1592,7 +1587,7 @@ static void start_webserver(void)
         .handler  = serve_index_html,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(g_httpd, &uri_index);
+    register_uri_checked(g_httpd, &uri_index);
 
     httpd_uri_t uri_css = {
         .uri      = "/glitch.css",
@@ -1600,7 +1595,7 @@ static void start_webserver(void)
         .handler  = serve_glitch_css,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(g_httpd, &uri_css);
+    register_uri_checked(g_httpd, &uri_css);
 
     httpd_uri_t uri_js = {
         .uri      = "/app.js",
@@ -1608,16 +1603,9 @@ static void start_webserver(void)
         .handler  = serve_app_js,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(g_httpd, &uri_js);
+    register_uri_checked(g_httpd, &uri_js);
 
     ESP_LOGI(TAG, "Web server started with captive portal support");
-}
-
-static void stop_webserver(void) {
-    if (g_httpd) {
-        httpd_stop(g_httpd);
-        g_httpd = NULL;
-    }
 }
 
 /* ========================= PROMISCUOUS / DEAUTH LOGIC ========================= */
@@ -1859,18 +1847,17 @@ static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     // AP Configuration
-    wifi_config_t ap_cfg = {
-        .ap = {
-            .ssid = "NeoWardrive",
-            .ssid_len = 0,
-            .channel = 1,
-            .password = "neo_wardrive_01",
-            .max_connection = 4,
-            .authmode = WIFI_AUTH_WPA_WPA2_PSK,
-            .ssid_hidden = 0,
-            .beacon_interval = 100,
-        },
-    };
+    wifi_config_t ap_cfg = { 0 };
+
+    strncpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid) - 1);
+    strncpy((char *)ap_cfg.ap.password, AP_PASS, sizeof(ap_cfg.ap.password) - 1);
+    ap_cfg.ap.ssid_len = strlen((const char *)ap_cfg.ap.ssid);
+
+    ap_cfg.ap.channel        = 1;
+    ap_cfg.ap.max_connection = 4;
+    ap_cfg.ap.authmode       = WIFI_AUTH_WPA_WPA2_PSK;
+    ap_cfg.ap.ssid_hidden    = 0;
+    ap_cfg.ap.beacon_interval = 100;
 
     // STA Configuration - Connect to your phone's hotspot
     wifi_config_t sta_cfg = {0};
