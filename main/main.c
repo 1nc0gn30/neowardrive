@@ -6,6 +6,8 @@
 #include <time.h>
 #include <sys/time.h>
 #include <ctype.h>
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -43,9 +45,9 @@ static const char *AP_SSID = "NeoWardrive";
 static const char *AP_PASS = "neo_wardrive_01";
 
 // IMPORTANT: Always use APSTA mode for scanning to work
-#define ENABLE_STA_MODE false
-#define STA_SSID ""
-#define STA_PASS ""
+#define ENABLE_STA_MODE true  
+#define STA_SSID "RedPill"  
+#define STA_PASS "W4RDR1V3!" 
 
 // ========================= TYPES ===========================
 extern const unsigned char index_html_start[] asm("_binary_index_html_start");
@@ -1258,11 +1260,40 @@ static esp_err_t serve_app_js(httpd_req_t *req)
         app_js_end - app_js_start
     );
 }
+// ========================= CAPTIVE PORTAL HANDLERS =========================
+// ADD THESE THREE FUNCTIONS right after your existing handler functions
+// (around line 784, after handler_api_handshake_status and before handler_api_wardrive_on)
+
+static esp_err_t handler_generate_204(httpd_req_t *req) {
+    // Android captive portal check
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t handler_hotspot_detect(httpd_req_t *req) {
+    // iOS captive portal check
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t handler_success_txt(httpd_req_t *req) {
+    // Microsoft/Windows captive portal check
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, "success", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+// ========================= UPDATE start_webserver() =========================
+// REPLACE your entire start_webserver() function with this version:
 
 static void start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 30;  // Increased from 24 for captive portal
     config.stack_size       = 8192;
 
     if (httpd_start(&g_httpd, &config) != ESP_OK) {
@@ -1270,7 +1301,26 @@ static void start_webserver(void)
         return;
     }
 
-    //
+    // === CAPTIVE PORTAL HANDLERS (Register these FIRST) ===
+    httpd_uri_t uri_generate_204 = { .uri = "/generate_204", .method = HTTP_GET, .handler = handler_generate_204 };
+    httpd_register_uri_handler(g_httpd, &uri_generate_204);
+    
+    httpd_uri_t uri_gen_204 = { .uri = "/gen_204", .method = HTTP_GET, .handler = handler_generate_204 };
+    httpd_register_uri_handler(g_httpd, &uri_gen_204);
+    
+    httpd_uri_t uri_hotspot_detect = { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = handler_hotspot_detect };
+    httpd_register_uri_handler(g_httpd, &uri_hotspot_detect);
+    
+    httpd_uri_t uri_library_test = { .uri = "/library/test/success.html", .method = HTTP_GET, .handler = handler_hotspot_detect };
+    httpd_register_uri_handler(g_httpd, &uri_library_test);
+    
+    httpd_uri_t uri_ncsi = { .uri = "/ncsi.txt", .method = HTTP_GET, .handler = handler_success_txt };
+    httpd_register_uri_handler(g_httpd, &uri_ncsi);
+    
+    httpd_uri_t uri_connecttest = { .uri = "/connecttest.txt", .method = HTTP_GET, .handler = handler_success_txt };
+    httpd_register_uri_handler(g_httpd, &uri_connecttest);
+
+    // === YOUR NORMAL HANDLERS (keep all existing ones) ===
     httpd_uri_t uri_root           = { .uri = "/",                     .method = HTTP_GET,  .handler = handler_root };
     httpd_uri_t uri_api_aps        = { .uri = "/api/aps",              .method = HTTP_GET,  .handler = handler_api_aps };
     httpd_uri_t uri_api_state      = { .uri = "/api/state",            .method = HTTP_GET,  .handler = handler_api_state };
@@ -1290,7 +1340,7 @@ static void start_webserver(void)
     httpd_uri_t uri_handshake_start= { .uri = "/api/handshake/start",  .method = HTTP_POST, .handler = handler_api_handshake_start };
     httpd_uri_t uri_handshake_stop = { .uri = "/api/handshake/stop",   .method = HTTP_POST, .handler = handler_api_handshake_stop };
     httpd_uri_t uri_handshake_stat = { .uri = "/api/handshake/status", .method = HTTP_GET,  .handler = handler_api_handshake_status };
-    //
+
     httpd_register_uri_handler(g_httpd, &uri_root);
     httpd_register_uri_handler(g_httpd, &uri_api_aps);
     httpd_register_uri_handler(g_httpd, &uri_api_state);
@@ -1311,9 +1361,7 @@ static void start_webserver(void)
     httpd_register_uri_handler(g_httpd, &uri_handshake_stop);
     httpd_register_uri_handler(g_httpd, &uri_handshake_stat);
 
-    //
-    // === STATIC ASSETS (no lambdas)
-    //
+    // === STATIC ASSETS ===
     httpd_uri_t uri_index = {
         .uri      = "/",
         .method   = HTTP_GET,
@@ -1338,9 +1386,8 @@ static void start_webserver(void)
     };
     httpd_register_uri_handler(g_httpd, &uri_js);
 
-    ESP_LOGI(TAG, "Web server started with UI + API handlers");
+    ESP_LOGI(TAG, "Web server started with captive portal support");
 }
-
 
 static void stop_webserver(void) {
     if (g_httpd) {
@@ -1411,6 +1458,116 @@ IRAM_ATTR static void wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t typ
     }
 }
 
+// DNS Server - Returns our IP for all queries (makes captive portal work)
+static void dns_server_task(void *pvParameters) {
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Failed to create DNS socket");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(53);  // DNS port
+
+    if (bind(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        ESP_LOGE(TAG, "DNS socket bind failed");
+        close(sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "DNS server started on port 53");
+
+    uint8_t rx_buffer[512];
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+
+    // Get our AP IP address
+    esp_netif_ip_info_t ip_info;
+    esp_netif_get_ip_info(g_ap_netif, &ip_info);
+    uint32_t our_ip = ip_info.ip.addr;
+
+    while (1) {
+        int len = recvfrom(sock, rx_buffer, sizeof(rx_buffer) - 1, 0,
+                          (struct sockaddr *)&client_addr, &client_addr_len);
+        
+        if (len < 12) continue;  // Invalid DNS packet
+
+        // Build DNS response
+        // Copy query ID and flags
+        uint8_t response[512];
+        memcpy(response, rx_buffer, 2);  // Transaction ID
+        
+        // Set flags: Response, Authoritative, No error
+        response[2] = 0x81;
+        response[3] = 0x80;
+        
+        // Copy question count
+        memcpy(response + 4, rx_buffer + 4, 2);
+        
+        // Answer count = 1
+        response[6] = 0x00;
+        response[7] = 0x01;
+        
+        // Authority and Additional = 0
+        response[8] = 0x00;
+        response[9] = 0x00;
+        response[10] = 0x00;
+        response[11] = 0x00;
+        
+        // Copy the question section
+        int question_len = 12;
+        while (question_len < len && rx_buffer[question_len] != 0) {
+            question_len++;
+        }
+        question_len += 5;  // null + type + class
+        
+        if (question_len > len) continue;
+        
+        memcpy(response + 12, rx_buffer + 12, question_len - 12);
+        
+        // Add answer section
+        int answer_offset = question_len;
+        
+        // Pointer to question name
+        response[answer_offset++] = 0xC0;
+        response[answer_offset++] = 0x0C;
+        
+        // Type A (host address)
+        response[answer_offset++] = 0x00;
+        response[answer_offset++] = 0x01;
+        
+        // Class IN
+        response[answer_offset++] = 0x00;
+        response[answer_offset++] = 0x01;
+        
+        // TTL (60 seconds)
+        response[answer_offset++] = 0x00;
+        response[answer_offset++] = 0x00;
+        response[answer_offset++] = 0x00;
+        response[answer_offset++] = 0x3C;
+        
+        // Data length (4 bytes for IPv4)
+        response[answer_offset++] = 0x00;
+        response[answer_offset++] = 0x04;
+        
+        // Our IP address
+        memcpy(response + answer_offset, &our_ip, 4);
+        answer_offset += 4;
+        
+        // Send response
+        sendto(sock, response, answer_offset, 0,
+               (struct sockaddr *)&client_addr, client_addr_len);
+    }
+    
+    close(sock);
+    vTaskDelete(NULL);
+}
+
+
 /* ========================= WARDIVE TASK ========================= */
 
 static void wardrive_task(void *arg) {
@@ -1438,6 +1595,26 @@ static void wardrive_task(void *arg) {
 
 /* ========================= WIFI INIT ========================= */
 
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+        ESP_LOGI(TAG, "STA started, connecting to %s...", STA_SSID);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGW(TAG, "Disconnected from AP, retrying...");
+        vTaskDelay(pdMS_TO_TICKS(5000));  // Wait 5 seconds
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(TAG, "Got IP from upstream AP: " IPSTR, IP2STR(&event->ip_info.ip));
+        g_sta_connected = true;
+    }
+}
+
+// 3. UPDATE wifi_init() function - REPLACE your existing wifi_init with this:
+
 static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -1445,72 +1622,67 @@ static void wifi_init(void) {
     g_ap_netif  = esp_netif_create_default_wifi_ap();
     g_sta_netif = esp_netif_create_default_wifi_sta();
 
+    // Register event handler for STA events
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, 
+                                               &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, 
+                                               &wifi_event_handler, NULL));
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t ap_cfg = {0};
-    size_t       ssid_len = strlen(AP_SSID);
-    if (ssid_len >= sizeof(ap_cfg.ap.ssid)) {
-        ssid_len = sizeof(ap_cfg.ap.ssid) - 1;
-    }
+    // AP Configuration
+    wifi_config_t ap_cfg = {
+        .ap = {
+            .ssid = "NeoWardrive",
+            .ssid_len = 0,
+            .channel = 1,
+            .password = "neo_wardrive_01",
+            .max_connection = 4,
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK,
+            .ssid_hidden = 0,
+            .beacon_interval = 100,
+        },
+    };
 
-    size_t pass_len = strlen(AP_PASS);
-    if (pass_len >= sizeof(ap_cfg.ap.password)) {
-        pass_len = sizeof(ap_cfg.ap.password) - 1;
-    }
-
-    strlcpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid));
-    ap_cfg.ap.ssid_len       = ssid_len;
-    ap_cfg.ap.channel        = 1;
-    strlcpy((char *)ap_cfg.ap.password, AP_PASS, sizeof(ap_cfg.ap.password));
-    ap_cfg.ap.max_connection = 4;
-    ap_cfg.ap.authmode       = pass_len ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
-    ap_cfg.ap.ssid_hidden    = 0;
-    ap_cfg.ap.beacon_interval = 100;
-    ap_cfg.ap.pmf_cfg.required = false;
-
-    // ALWAYS use APSTA mode for wardrive scanning to work
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-
-    // Configure empty STA (not connecting to anything, just enabling STA interface for scanning)
+    // STA Configuration - Connect to your phone's hotspot
     wifi_config_t sta_cfg = {0};
+    
+    if (ENABLE_STA_MODE && strlen(STA_SSID) > 0) {
+        strcpy((char*)sta_cfg.sta.ssid, STA_SSID);
+        strcpy((char*)sta_cfg.sta.password, STA_PASS);
+        sta_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        ESP_LOGI(TAG, "STA mode enabled, will connect to: %s", STA_SSID);
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
-
-    // Keep gateway aligned with the AP IP so clients don't drop the connection
-    // due to an invalid/default gateway address.
-    esp_netif_ip_info_t ip_info = {
-        .ip      = { .addr = esp_ip4addr_aton("192.168.4.1") },
-        .netmask = { .addr = esp_ip4addr_aton("255.255.255.0") },
-        // Advertise no default route so clients keep their own internet connection
-        .gw      = { .addr = 0 },
-    };
-
+    
+    // Configure DNS for captive portal
     ESP_ERROR_CHECK(esp_netif_dhcps_stop(g_ap_netif));
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(g_ap_netif, &ip_info));
-
-    uint32_t dns_zero = 0;
-    ESP_ERROR_CHECK(esp_netif_dhcps_option(
-        g_ap_netif,
-        ESP_NETIF_OP_SET,
-        ESP_NETIF_DOMAIN_NAME_SERVER,
-        &dns_zero,
-        sizeof(dns_zero)
-    ));
-
+    
+    esp_netif_ip_info_t ip_info;
+    esp_netif_get_ip_info(g_ap_netif, &ip_info);
+    
+    esp_netif_dns_info_t dns_info;
+    dns_info.ip.u_addr.ip4.addr = ip_info.ip.addr;
+    dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+    esp_netif_set_dns_info(g_ap_netif, ESP_NETIF_DNS_MAIN, &dns_info);
+    
     ESP_ERROR_CHECK(esp_netif_dhcps_start(g_ap_netif));
-
-    // Keep the AP beacons consistent while we're busy scanning/injecting
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     update_promiscuous_filter();
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
 
-    ESP_LOGI(TAG, "WiFi initialized in APSTA mode (AP SSID: %s)", AP_SSID);
+    ESP_LOGI(TAG, "WiFi AP started: SSID=%s", ap_cfg.ap.ssid);
+    if (ENABLE_STA_MODE && strlen(STA_SSID) > 0) {
+        ESP_LOGI(TAG, "Connecting to upstream AP: %s", STA_SSID);
+    }
 }
-/* ========================= APP MAIN ========================= */
 
 void app_main(void) {
     esp_err_t ret = nvs_flash_init();
@@ -1529,6 +1701,9 @@ void app_main(void) {
     wifi_init();
     start_webserver();
 
+    // START DNS SERVER FOR CAPTIVE PORTAL
+    xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, NULL);
+
     xTaskCreatePinnedToCore(
         wardrive_task,
         "wardrive_task",
@@ -1539,5 +1714,5 @@ void app_main(void) {
         tskNO_AFFINITY
     );
 
-    ESP_LOGI(TAG, "Neo Wardrive Pro started");
+    ESP_LOGI(TAG, "Neo Wardrive Pro started with captive portal support");
 }
