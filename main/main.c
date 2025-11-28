@@ -25,6 +25,7 @@
 #include "esp_timer.h"
 #include "esp_http_server.h"
 #include "esp_mac.h"
+#include "esp_http_client.h"
 
 static esp_err_t handler_api_handshake_start(httpd_req_t *req);
 static esp_err_t handler_api_handshake_stop(httpd_req_t *req);
@@ -170,6 +171,8 @@ static SemaphoreHandle_t g_ap_mutex = NULL;
 static esp_netif_t *g_ap_netif      = NULL;
 static esp_netif_t *g_sta_netif     = NULL;
 static bool      g_sta_connected    = false;
+static char      g_sta_ssid[33]     = "";
+static char      g_sta_ip[16]       = "";
 
 static deauth_event_t   g_deauth_log[32];
 static int              g_deauth_head = 0;
@@ -197,6 +200,32 @@ static void mac_to_str(const uint8_t mac[6], char *out, size_t len) {
 
 static bool mac_equal(const uint8_t a[6], const uint8_t b[6]) {
     return memcmp(a, b, 6) == 0;
+}
+
+static bool parse_json_string(const char *json, const char *key, char *out, size_t out_len) {
+    if (!json || !key || !out || out_len == 0) return false;
+
+    char pattern[32];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+
+    char *p = strstr(json, pattern);
+    if (!p) return false;
+
+    p = strchr(p + strlen(pattern), ':');
+    if (!p) return false;
+    p++;
+
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p != '"') return false;
+    p++;
+
+    size_t i = 0;
+    while (*p && *p != '"' && i < out_len - 1) {
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+
+    return i > 0;
 }
 
 static void str_to_mac(const char *str, uint8_t mac[6]) {
@@ -825,6 +854,188 @@ static esp_err_t handler_api_channels(httpd_req_t *req) {
     return httpd_resp_send(req, buf, off);
 }
 
+static esp_err_t handler_api_wifi_status(httpd_req_t *req) {
+    wifi_config_t cfg = {0};
+    esp_wifi_get_config(WIFI_IF_STA, &cfg);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\"}",
+             g_sta_connected ? "true" : "false",
+             g_sta_ssid[0] ? g_sta_ssid : (char *)cfg.sta.ssid,
+             g_sta_ip);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handler_api_wifi_scan(httpd_req_t *req) {
+    wifi_scan_config_t scan_cfg = {
+        .ssid        = NULL,
+        .bssid       = NULL,
+        .channel     = 0,
+        .show_hidden = true,
+        .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+    };
+
+    esp_wifi_set_promiscuous(false);
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    esp_wifi_set_promiscuous(true);
+
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "scan failed");
+        return err;
+    }
+
+    uint16_t num = 0;
+    esp_wifi_scan_get_ap_num(&num);
+    if (num == 0) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "[]", HTTPD_RESP_USE_STRLEN);
+    }
+
+    wifi_ap_record_t *records = calloc(num, sizeof(wifi_ap_record_t));
+    if (!records) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_ERR_NO_MEM;
+    }
+
+    uint16_t actual = num;
+    err = esp_wifi_scan_get_ap_records(&actual, records);
+    if (err != ESP_OK) {
+        free(records);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "scan read failed");
+        return err;
+    }
+
+    char *json_buf = malloc(JSON_BUF_SIZE);
+    if (!json_buf) {
+        free(records);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t off = 0;
+    off += snprintf(json_buf + off, JSON_BUF_SIZE - off, "[");
+    bool first = true;
+
+    for (int i = 0; i < actual && off < JSON_BUF_SIZE - 128; i++) {
+        wifi_ap_record_t *r = &records[i];
+        char bssid[18];
+        mac_to_str(r->bssid, bssid, sizeof(bssid));
+
+        if (!first) off += snprintf(json_buf + off, JSON_BUF_SIZE - off, ",");
+        first = false;
+
+        off += snprintf(json_buf + off, JSON_BUF_SIZE - off,
+                        "{\"ssid\":\"%s\",\"bssid\":\"%s\",\"rssi\":%d,\"channel\":%u,\"auth\":%u}",
+                        r->ssid[0] ? (char *)r->ssid : "<hidden>",
+                        bssid,
+                        (int)r->rssi,
+                        (unsigned)r->primary,
+                        (unsigned)r->authmode);
+    }
+
+    off += snprintf(json_buf + off, JSON_BUF_SIZE - off, "]");
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t resp_err = httpd_resp_send(req, json_buf, off);
+
+    free(json_buf);
+    free(records);
+
+    return resp_err;
+}
+
+static esp_err_t handler_api_wifi_connect(httpd_req_t *req) {
+    char body[256];
+    int received = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body");
+        return ESP_FAIL;
+    }
+    body[received] = '\0';
+
+    wifi_config_t sta_cfg = {0};
+
+    if (!parse_json_string(body, "ssid", (char *)sta_cfg.sta.ssid, sizeof(sta_cfg.sta.ssid))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid missing");
+        return ESP_FAIL;
+    }
+    parse_json_string(body, "password", (char *)sta_cfg.sta.password, sizeof(sta_cfg.sta.password));
+    sta_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+    strncpy(g_sta_ssid, (char *)sta_cfg.sta.ssid, sizeof(g_sta_ssid) - 1);
+    g_sta_ssid[sizeof(g_sta_ssid) - 1] = '\0';
+    g_sta_connected = false;
+    g_sta_ip[0] = '\0';
+
+    esp_wifi_disconnect();
+    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    esp_wifi_connect();
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"status\":\"connecting\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+typedef struct {
+    char   *buf;
+    size_t  len;
+    size_t  cap;
+} http_buf_t;
+
+static esp_err_t http_collect_handler(esp_http_client_event_t *evt) {
+    http_buf_t *hb = (http_buf_t *)evt->user_data;
+    if (!hb) return ESP_OK;
+
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data && evt->data_len > 0) {
+        size_t to_copy = evt->data_len;
+        if (hb->len + to_copy >= hb->cap) {
+            to_copy = hb->cap - hb->len - 1;
+        }
+        if (to_copy > 0) {
+            memcpy(hb->buf + hb->len, evt->data, to_copy);
+            hb->len += to_copy;
+            hb->buf[hb->len] = '\0';
+        }
+    }
+    return ESP_OK;
+}
+
+static esp_err_t handler_api_gps_network(httpd_req_t *req) {
+    if (!g_sta_connected) {
+        httpd_resp_send_err(req, HTTPD_503_SERVICE_UNAVAILABLE, "sta not connected");
+        return ESP_FAIL;
+    }
+
+    char body[512] = {0};
+    http_buf_t hb = {.buf = body, .len = 0, .cap = sizeof(body)};
+
+    esp_http_client_config_t cfg = {
+        .url = "http://ip-api.com/json/?fields=status,message,lat,lon,city,country,query",
+        .event_handler = http_collect_handler,
+        .user_data = &hb,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "http init failed");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200 || hb.len == 0) {
+        httpd_resp_send_err(req, HTTPD_502_BAD_GATEWAY, "geo lookup failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, hb.buf, hb.len);
+}
+
 static esp_err_t handler_api_clear(httpd_req_t *req) {
     if (xSemaphoreTake(g_ap_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         memset(g_aps, 0, sizeof(g_aps));
@@ -1337,6 +1548,10 @@ static void start_webserver(void)
     httpd_uri_t uri_classifications = { .uri = "/api/classifications", .method = HTTP_GET,  .handler = handler_api_classifications };
     httpd_uri_t uri_deauth         = { .uri = "/api/security/deauth",  .method = HTTP_GET,  .handler = handler_api_deauth };
     httpd_uri_t uri_packets_send   = { .uri = "/api/packets/send",     .method = HTTP_POST, .handler = handler_api_packets_send };
+    httpd_uri_t uri_wifi_scan      = { .uri = "/api/wifi/scan",        .method = HTTP_GET,  .handler = handler_api_wifi_scan };
+    httpd_uri_t uri_wifi_connect   = { .uri = "/api/wifi/connect",     .method = HTTP_POST, .handler = handler_api_wifi_connect };
+    httpd_uri_t uri_wifi_status    = { .uri = "/api/wifi/status",      .method = HTTP_GET,  .handler = handler_api_wifi_status };
+    httpd_uri_t uri_gps_network    = { .uri = "/api/gps/network",      .method = HTTP_GET,  .handler = handler_api_gps_network };
     httpd_uri_t uri_handshake_start= { .uri = "/api/handshake/start",  .method = HTTP_POST, .handler = handler_api_handshake_start };
     httpd_uri_t uri_handshake_stop = { .uri = "/api/handshake/stop",   .method = HTTP_POST, .handler = handler_api_handshake_stop };
     httpd_uri_t uri_handshake_stat = { .uri = "/api/handshake/status", .method = HTTP_GET,  .handler = handler_api_handshake_status };
@@ -1357,6 +1572,10 @@ static void start_webserver(void)
     httpd_register_uri_handler(g_httpd, &uri_classifications);
     httpd_register_uri_handler(g_httpd, &uri_deauth);
     httpd_register_uri_handler(g_httpd, &uri_packets_send);
+    httpd_register_uri_handler(g_httpd, &uri_wifi_scan);
+    httpd_register_uri_handler(g_httpd, &uri_wifi_connect);
+    httpd_register_uri_handler(g_httpd, &uri_wifi_status);
+    httpd_register_uri_handler(g_httpd, &uri_gps_network);
     httpd_register_uri_handler(g_httpd, &uri_handshake_start);
     httpd_register_uri_handler(g_httpd, &uri_handshake_stop);
     httpd_register_uri_handler(g_httpd, &uri_handshake_stat);
@@ -1604,12 +1823,15 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "STA started, connecting to %s...", STA_SSID);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(TAG, "Disconnected from AP, retrying...");
+        g_sta_connected = false;
+        g_sta_ip[0] = '\0';
         vTaskDelay(pdMS_TO_TICKS(5000));  // Wait 5 seconds
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "Got IP from upstream AP: " IPSTR, IP2STR(&event->ip_info.ip));
         g_sta_connected = true;
+        snprintf(g_sta_ip, sizeof(g_sta_ip), IPSTR, IP2STR(&event->ip_info.ip));
     }
 }
 
@@ -1653,6 +1875,7 @@ static void wifi_init(void) {
         strcpy((char*)sta_cfg.sta.password, STA_PASS);
         sta_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
         ESP_LOGI(TAG, "STA mode enabled, will connect to: %s", STA_SSID);
+        strncpy(g_sta_ssid, (char *)sta_cfg.sta.ssid, sizeof(g_sta_ssid) - 1);
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));

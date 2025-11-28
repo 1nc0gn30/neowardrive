@@ -77,31 +77,36 @@ const GeoTracker = {
     networkFallbackAttempted: false,
 
     fetchNetworkLocation: async function({ silent = false } = {}) {
-        // Fallback that works on insecure origins (coarse IP-based location)
-        // Requires external connectivity but avoids the secure-origin restriction
+        // Fallback that works even when the client device lacks internet by
+        // proxying through the ESP32's hotspot connection.
         try {
-            const resp = await fetch('https://ipapi.co/json/');
+            const resp = await fetch('/api/gps/network');
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
-            if (!data.latitude || !data.longitude) throw new Error('No coordinates in response');
+
+            const lat = data.latitude || data.lat;
+            const lon = data.longitude || data.lon;
+
+            if (!lat || !lon) throw new Error('No coordinates in response');
 
             this.permissionState = 'granted';
             this.lastLocation = {
-                lat: data.latitude,
-                lon: data.longitude,
-                accuracy: data.utc_offset ? 5000 : 5000, // coarse estimate
+                lat,
+                lon,
+                accuracy: data.accuracy || 5000,
                 timestamp: Date.now(),
                 source: 'network'
             };
             if (!silent) {
-                log(activityLog, `🛰️ Fallback location: ${formatCoords(this.lastLocation)} (network)`);
+                const hint = data.city ? ` via ${data.city}` : ' via hotspot';
+                log(activityLog, `🛰️ Fallback location: ${formatCoords(this.lastLocation)}${hint}`);
             }
             updateGpsStatus(this.lastLocation);
             return this.lastLocation;
         } catch (err) {
             console.warn('Network geolocation fallback failed', err);
             if (!silent) {
-                log(activityLog, '✗ GPS fallback failed — internet required for coarse location');
+                log(activityLog, '✗ GPS fallback failed — ensure the ESP32 hotspot has internet');
             }
             return null;
         }
@@ -490,6 +495,91 @@ document.getElementById("btnGpsDisable").onclick = () => {
     updateGpsStatus(GeoTracker.lastLocation);
 };
 
+// ===== WIFI UPLINK CONTROLS =====
+const wifiStatusText = document.getElementById("wifiStatusText");
+const wifiSsidInput = document.getElementById("wifiSsid");
+const wifiPassInput = document.getElementById("wifiPass");
+const wifiScanList = document.getElementById("wifiScanList");
+
+function renderWifiScan(results = []) {
+    if (!wifiScanList) return;
+    wifiScanList.innerHTML = "";
+
+    if (!results.length) {
+        wifiScanList.innerHTML = '<li class="wifi-row">No networks found yet...</li>';
+        return;
+    }
+
+    results
+        .sort((a, b) => b.rssi - a.rssi)
+        .slice(0, 12)
+        .forEach(ap => {
+            const li = document.createElement('li');
+            li.className = 'wifi-row';
+            li.innerHTML = `
+                <div>
+                    <div class="wifi-ssid">${ap.ssid || '<hidden>'}</div>
+                    <div class="wifi-meta">${ap.rssi} dBm · CH ${ap.channel}</div>
+                </div>
+                <button class="btn btn-secondary btn-small">Use</button>
+            `;
+            li.querySelector('button').onclick = () => {
+                wifiSsidInput.value = ap.ssid;
+                wifiPassInput.focus();
+            };
+            wifiScanList.appendChild(li);
+        });
+}
+
+async function refreshWifiStatus() {
+    if (!wifiStatusText) return;
+    try {
+        const res = await fetch('/api/wifi/status');
+        const data = await res.json();
+        const status = data.connected ? 'Connected' : 'Not connected';
+        const detail = data.ssid ? `SSID: ${data.ssid}` : 'SSID: —';
+        const ip = data.ip ? `IP: ${data.ip}` : '';
+        wifiStatusText.textContent = `${status} • ${detail} ${ip}`.trim();
+    } catch (err) {
+        wifiStatusText.textContent = 'WiFi status unavailable';
+    }
+}
+
+document.getElementById('btnWifiScan')?.addEventListener('click', async () => {
+    try {
+        wifiScanList.innerHTML = '<li class="wifi-row">Scanning...</li>';
+        const res = await fetch('/api/wifi/scan');
+        const aps = await res.json();
+        renderWifiScan(aps);
+        log(activityLog, `📶 Found ${aps.length} uplink options`);
+    } catch (err) {
+        console.error(err);
+        wifiScanList.innerHTML = '<li class="wifi-row">Scan failed</li>';
+        log(activityLog, '✗ WiFi scan failed');
+    }
+});
+
+document.getElementById('btnWifiConnect')?.addEventListener('click', async () => {
+    const ssid = wifiSsidInput.value.trim();
+    const password = wifiPassInput.value;
+    if (!ssid) {
+        alert('Enter an SSID to connect');
+        return;
+    }
+
+    try {
+        await fetch('/api/wifi/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ssid, password })
+        });
+        log(activityLog, `⏳ Connecting to ${ssid}...`);
+        setTimeout(refreshWifiStatus, 1500);
+    } catch (err) {
+        log(activityLog, '✗ Failed to start connection');
+    }
+});
+
 // ===== DASHBOARD UPDATE =====
 function renderDashboardTable(aps) {
     const tbody = document.getElementById("dashApList");
@@ -542,6 +632,8 @@ async function updateDashboard() {
         // Fetch state
         const stateRes = await fetch("/api/state");
         const state = await stateRes.json();
+
+        await refreshWifiStatus();
 
         // Update stats
         document.getElementById("apCount").textContent = mergedAps.length;
