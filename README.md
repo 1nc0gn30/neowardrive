@@ -1,14 +1,24 @@
-# neowardrive
+<!-- xonettn -->
+<div align="center">
+
+# 📦 Neowardrive
 
 ESP32-S2 Custom Wardrive Wifi Scannig Tool
 
-## Overview
+
+![Deploy](https://img.shields.io/badge/Deployed-Netlify-00C7B7?logo=netlify&logoColor=white)
+
+</div>
+
+---
+
+## 📋 Overview
 ESP32-S2 Custom Wardrive Wifi Scannig Tool
 
-## Tech Stack
+## 📦 Tech Stack
 - Assembly
 
-## Project Structure
+## 🗂️ Project Structure
 ```
 neowardrive/
   - build
@@ -16,13 +26,13 @@ neowardrive/
   (1402 files total)
 ```
 
-## Getting Started
+## 🚀 Getting Started
 
-### Usage
+### 📖 Usage
 Open index.html in your browser or serve locally.
 Use: npx serve .
 
-## TODO / Roadmap
+## 📝 TODO / Roadmap
 - [ ] Add unit tests
 - [ ] Add LICENSE file
 - [ ] Add CI/CD pipeline
@@ -31,14 +41,22 @@ Use: npx serve .
 - [ ] Add environment variable documentation
 - [ ] Add code comments and inline documentation
 
-## Deployment
+## 🚀 Deployment
 This project can be deployed to Netlify, Vercel, or any static host.
 
-## Author
+## 👤 Author
 **Neal Frazier** - [@AshAmplifies](https://github.com/1nc0gn30)
 
-## Links
+## 🔗 Links
 - GitHub: https://github.com/1nc0gn30/neowardrive
 
 ---
 *This README was enhanced as part of the neals-projects-2026 batch update.*
+
+---
+
+<div align="center">
+
+**[xonettn]** · Built by [Neal Frazier](https://github.com/1nc0gn30) · [@AshAmplifies](https://twitter.com/AshAmplifies)
+
+</div>
